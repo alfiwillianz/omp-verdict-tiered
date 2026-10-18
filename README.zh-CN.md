@@ -46,28 +46,32 @@ pi-verdict 补上这道缺失的门禁，由模型基于上下文和你的意图
 
 ## 快速开始
 
+本仓库是 **`pi-verdict-tiered` fork**，未发布到 npm——`pi install npm:pi-verdict` 安装的是不含分层裁决运行时的上游包。请从克隆安装:
+
 ```bash
-# 从 npm 安装(pi):
-pi install npm:pi-verdict
+git clone git@github.com:alfiwillianz/pi-verdict-tiered.git
+cd pi-verdict-tiered
+bun install
 
-# 从 npm 安装(oh-my-pi / omp):
-omp plugin install npm:pi-verdict
+# 将包目录安装进 pi(就地加载)
+pi install "$PWD"
 
-# 或直接从源码 —— 试用一次
-pi --extension ./extensions/pi-verdict.ts
-
+# 或仅本次运行试用
+pi -e "$PWD"
 ```
 
-需要 pi ≥ 0.99。交互与非交互(`-p`/json/rpc)会话均支持；非交互模式下 `ask` 降级为 `deny`。
+完整指南(含 git 安装形式、Tier 1 bundle 安装、更新与故障排查):**[docs/installation.md](docs/installation.md)**。
+
+需要 pi ≥ 0.99 与 Bun。交互与非交互(`-p`/json/rpc)会话均支持；非交互模式下 `ask` 降级为 `deny`。
 
 ### 宿主
 
 pi-verdict 0.13+ 需 **pi ≥ 0.99**,仅支持 pi(原生分类器接入,[ADR-0005](docs/adr/0005-native-classifier-migration.md))。老宿主——pi < 0.99 与 [oh-my-pi](https://github.com/can1357/oh-my-pi)(omp)——继续使用 npm 上的 **0.12.x** 线(老宿主配老版本扩展)。0.12 线仍按自身安装位置自锚定到所在宿主的目录树,双宿主并存的机器上跟随扩展副本自身的位置;其在 omp 18 下的分类器模型调用回退 pi-ai compat API(仍然 fail-closed)。细节见 [docs/configuration.md](docs/configuration.md#host-notes-pi-and-oh-my-pi)。
 
-| | pi | omp(0.12.x 线) |
+| | pi(本 fork) | omp(上游 0.12.x 线) |
 |---|---|---|
-| 安装 | `pi install npm:pi-verdict` | `omp plugin install npm:pi-verdict` |
-| 扩展副本 | `~/.pi/agent/extensions/` | `~/.omp/plugins/node_modules/pi-verdict/`(omp 18.1+；≤18.0 在 `agent/` 下) |
+| 安装 | 克隆后 `pi install "$PWD"`([指南](docs/installation.md)) | `omp plugin install npm:pi-verdict` |
+| 扩展副本 | 从克隆就地加载(`extensions/pi-verdict.ts`;方式 B:`<agentDir>/git/…`) | `~/.omp/plugins/node_modules/pi-verdict/`(omp 18.1+；≤18.0 在 `agent/` 下) |
 | 用户规则 | `~/.pi/agent/config/pi-verdict.json` | `~/.omp/agent/config/pi-verdict.json` |
 | 凭据文件(S0 硬 deny) | `~/.pi/agent/auth.json` | `~/.omp/agent/auth.json` |
 
@@ -153,7 +157,7 @@ bun run setup:lancet --dir DIR  # 自定义位置(需与 tier1Lancet.modelPath �
 
 ### 原生 jev 分类器([ADR-0005](docs/adr/0005-native-classifier-migration.md))
 
-1. 安装:`pi install npm:pi-verdict`(v0.13+;需 pi ≥ 0.99——老宿主继续用 0.12.x)
+1. 从源码安装本 fork:[docs/installation.md](docs/installation.md)(v0.13+;需 pi ≥ 0.99——老宿主继续用上游 0.12.x)
 2. 为任一内置 Jev transport 准备好凭证:
   - **TypeSafe 直连**(`typesafe/jev-latest`):`export TYPESAFE_API_KEY=apikey_...`(console.typesafe.ai 自助发 key)
   - **OpenRouter**(`openrouter/~typesafe/jev-latest`、`openrouter/typesafe/jev-1.13`):pi 内 `/login openrouter`,或 `export OPENROUTER_API_KEY=sk-or-v1...`

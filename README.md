@@ -46,28 +46,32 @@ Full statement in [docs/security-principles.md](docs/security-principles.md).
 
 ## Quick start
 
+This repository is the **`pi-verdict-tiered` fork** and is not published to npm — `pi install npm:pi-verdict` installs the upstream package without the tiered runtime. Install from a clone:
+
 ```bash
-# install from npm (pi):
-pi install npm:pi-verdict
+git clone git@github.com:alfiwillianz/pi-verdict-tiered.git
+cd pi-verdict-tiered
+bun install
 
-# install from npm (oh-my-pi / omp):
-omp plugin install npm:pi-verdict
+# install the package directory into pi (loaded in place)
+pi install "$PWD"
 
-# or directly from git — try it once
-pi --extension ./extensions/pi-verdict.ts
-
+# or try it for one invocation
+pi -e "$PWD"
 ```
 
-Requires pi ≥ 0.99. Works in interactive and non-interactive (`-p`/json/rpc) sessions; in non-interactive modes `ask` degrades to `deny`.
+Full guide, including the git-install form, Tier 1 bundle setup, updating, and troubleshooting: **[docs/installation.md](docs/installation.md)**.
+
+Requires pi ≥ 0.99 and Bun. Works in interactive and non-interactive (`-p`/json/rpc) sessions; in non-interactive modes `ask` degrades to `deny`.
 
 ### Hosts
 
 pi-verdict 0.13+ requires **pi ≥ 0.99** and runs on pi only (native classifier support, [ADR-0005](docs/adr/0005-native-classifier-migration.md)). Older hosts — pi < 0.99 and [oh-my-pi](https://github.com/can1357/oh-my-pi) (omp) — keep using the **0.12.x** line from npm (old hosts run old extensions). The 0.12 line still self-anchors to whichever agent tree it is installed in and follows the extension copy's own location on dual-install machines; its classifier completion falls back to the pi-ai compat API on omp 18 (still fail-closed). Details: [docs/configuration.md](docs/configuration.md#host-notes-pi-and-oh-my-pi).
 
-| | pi | omp (0.12.x line) |
+| | pi (this fork) | omp (upstream 0.12.x line) |
 |---|---|---|
-| install | `pi install npm:pi-verdict` | `omp plugin install npm:pi-verdict` |
-| extension copy | `~/.pi/agent/extensions/` | `~/.omp/plugins/node_modules/pi-verdict/` (omp 18.1+; ≤18.0: under `agent/`) |
+| install | `pi install "$PWD"` from a clone ([guide](docs/installation.md)) | `omp plugin install npm:pi-verdict` |
+| extension copy | loaded in place from the clone (`extensions/pi-verdict.ts`; Option B: `<agentDir>/git/…`) | `~/.omp/plugins/node_modules/pi-verdict/` (omp 18.1+; ≤18.0: under `agent/`) |
 | user rules | `~/.pi/agent/config/pi-verdict.json` | `~/.omp/agent/config/pi-verdict.json` |
 | credential file (S0 hard deny) | `~/.pi/agent/auth.json` | `~/.omp/agent/auth.json` |
 
@@ -153,7 +157,7 @@ The setup verifies `export.json` against the release manifest digest, every mode
 
 ### Native jev classifier ([ADR-0005](docs/adr/0005-native-classifier-migration.md))
 
-1. Install: `pi install npm:pi-verdict` (v0.13+; pi ≥ 0.99 required — older hosts keep 0.12.x)
+1. Install this fork from source: [docs/installation.md](docs/installation.md) (v0.13+; pi ≥ 0.99 required — older hosts keep upstream 0.12.x)
 2. Ensure a credential for one of the built-in Jev transports:
    - **TypeSafe direct** (`typesafe/jev-latest`): `export TYPESAFE_API_KEY=apikey_...` (self-service at console.typesafe.ai)
    - **OpenRouter** (`openrouter/~typesafe/jev-latest`, `openrouter/typesafe/jev-1.13`): `/login openrouter` inside pi, or `export OPENROUTER_API_KEY=sk-or-v1...`

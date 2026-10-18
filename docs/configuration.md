@@ -130,7 +130,7 @@ Bypass testing of the rule layer ([writeup](../research/rule-layer-security-audi
 
 ## Host notes (pi and oh-my-pi)
 
-pi-verdict 0.13+ requires **pi ≥ 0.99** (native classifier support, `peerDependencies >=0.99.0`). Older hosts — pi < 0.99 and omp (whose kernel pi 0.99 adoption is pending) — keep using **0.12.x** from npm; old hosts run old extensions ([ADR-0005](adr/0005-native-classifier-migration.md)). The extension self-anchors to whichever agent tree it is installed in. On a dual-install machine the gate follows the extension copy's own location — the mere presence of `~/.omp` never redirects a pi run (and vice versa).
+pi-verdict 0.13+ requires **pi ≥ 0.99** (native classifier support, `peerDependencies >=0.99.0`). Older hosts — pi < 0.99 and omp (whose kernel pi 0.99 adoption is pending) — keep using **0.12.x** from npm; old hosts run old extensions ([ADR-0005](adr/0005-native-classifier-migration.md)). This repository is the `pi-verdict-tiered` fork and is not published to npm; install it from a clone per [installation.md](installation.md). The extension self-anchors to whichever agent tree it is installed in. On a dual-install machine the gate follows the extension copy's own location — the mere presence of `~/.omp` never redirects a pi run (and vice versa).
 
 Implementation details worth knowing if you hack on the extension:
 
