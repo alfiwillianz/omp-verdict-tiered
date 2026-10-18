@@ -5,7 +5,7 @@
 
 **A minimal permission gate for [omp](https://omp.sh) (oh-my-pi), inspired by Claude Code's auto mode: every tool call gets checked before it runs — allow, deny, or ask you first.**
 
-> **Fork notice.** This is `pi-verdict-tiered`, a fork of [jesset/pi-verdict](https://github.com/jesset/pi-verdict) by **Jesset**, ported to run on **omp only**. The original project targets [pi](https://pi.dev); all credit for the design, the rule floor, the self-protection layer, and the research behind them belongs to the original author. See [Attribution](#attribution).
+> **Fork notice.** This is `omp-verdict-tiered`, a fork of [jesset/pi-verdict](https://github.com/jesset/pi-verdict) by **Jesset**, ported to run on **omp only**. The original project targets [pi](https://pi.dev); all credit for the design, the rule floor, the self-protection layer, and the research behind them belongs to the original author. See [Attribution](#attribution).
 
 - Built-in danger rules and your own allow/deny rules settle the clear cases first, at zero latency
 - Everything else goes to a model classifier that sees the conversation context
