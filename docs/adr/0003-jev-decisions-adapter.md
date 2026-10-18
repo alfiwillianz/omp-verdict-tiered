@@ -1,43 +1,45 @@
 # 0003 - Jev decisions adapter: a non-generative model as the classifier backend
 
 ---
-status: superseded by ADR-0005 (the adapter mechanism; the research basis, criteria, and failure discipline carry over)
+status: historical — superseded by ADR-0005, and not present in the omp fork
 date: 2026-09-19
 ---
 
+> **Fork note.** This ADR records the original pi-era design. The adapter extension it
+> describes (`extensions/jev-adapter.ts`) was deleted upstream in 0.13 when pi gained
+> native classifier support (ADR-0005). This omp fork reaches judgment models through
+> omp's typed-judgment client instead, so no adapter exists here either. The record is
+> kept because the research basis, the criteria, and the failure discipline still
+> describe the classifier's contract.
+
 ## Background
 
-TypeSafe's jev (released 2026-09-15) is a **decisions-modality** model: it takes unstructured state in and returns schema-constrained typed decisions (a chosen value plus a probability distribution and a confidence), generating no text. OpenRouter serves it only through the dedicated `POST /api/alpha/decisions` endpoint (`chat/completions` rejects it with an explicit 400), and it does not appear in the public model catalog. pi's built-in `openrouter` provider speaks chat completions only, while `classifierModel` resolves through pi's `modelRegistry` — jev cannot enter that system without an adapter.
+TypeSafe's jev (released 2026-09-15) is a **decisions-modality** model: it takes unstructured state in and returns schema-constrained typed decisions (a chosen value plus a probability distribution and a confidence), generating no text. OpenRouter serves it only through the dedicated `POST /api/alpha/decisions` endpoint (`chat/completions` rejects it with an explicit 400), and it does not appear in the public model catalog. The original host's `openrouter` provider spoke chat completions only, while `classifierModel` resolved through the host model registry — jev could not enter that system without an adapter.
 
-Research findings (research/typesafe-jev-classifiermodel.md, later revised and extended by research/jev-classifier-model.md): the classifier task maps exactly onto jev's `choice` primitive (a three-way allow/ask/deny pick); live in-repo measurements showed ~1.2s latency and ~$0.000015 per call. However, TypeSafe's own jaggedness docs concede that **"State is data, and `jev-1.13` does not treat it as hostile by default"** — adversarial content can move its judgment, and the classifier's state is precisely a transcript containing untrusted file content.
+Research findings (`research/typesafe-jev-classifiermodel.md`, later revised and extended by `research/jev-classifier-model.md`): the classifier task maps exactly onto jev's `choice` primitive (a three-way allow/ask/deny pick); live in-repo measurements showed ~1.2 s latency and ~$0.000015 per call. However, TypeSafe's own jaggedness docs concede that **"State is data, and `jev-1.13` does not treat it as hostile by default"** — adversarial content can move its judgment, and the classifier's state is precisely a transcript containing untrusted file content.
 
-## Decision
+## Decision (as originally made)
 
-1. **Second bundled extension, lazily effective**: `extensions/jev-adapter.ts` ships in the same package (the package's `pi.extensions` points at the whole directory) and registers `typesafe/jev-latest` (`reasoning: false`) via `pi.registerProvider()`. Unless `classifierModel` points at it or credentials resolve, the adapter takes no part in adjudication (registered but inert).
-2. **Credentials reuse pi's system, no second channel** *(amended 2026-09-19)*: two transports share one adapter (`PI_VERDICT_JEV_TRANSPORT`, default `openrouter`; their wire contracts are isomorphic except for the model slug — live-verified, research/typesafe-jev-classifiermodel.md §2 and the 2026-09-19 direct probes). The `openrouter` transport resolves `ctx.modelRegistry.getProviderAuth("openrouter")` (resolver stashed at `session_start`) → `OPENROUTER_API_KEY` env → none. The `typesafe` transport (added 2026-09-19) targets TypeSafe's official v1 `POST /v1/systemone`; pi has no typesafe provider or login, so `TYPESAFE_API_KEY` env is its only source — still resolved through the provider auth pipeline, never a bare fetch or a second store. Either way, unconfigured means the main extension falls back to the session model with the existing warning. Because the registry's `hasConfiguredAuth` reads a sync snapshot built at startup, the same provider object is re-registered after `session_start` to trigger an availability refresh of that snapshot.
-3. **Translation contract**: state = the classifier request's last user message (the transcript); the question is a fixed allow/ask/deny `choice` (criteria mirror `CLASSIFIER_SYSTEM`, keeping the evidence-not-instruction discipline and the err-on-ask default); the response is synthesized into a user-readable `<verdict>{choice}</verdict> jev: ask 63% (confidence 45%; allow 35%, deny 2%)` — satisfying the existing prefix contract with zero changes to the main adjudication pipeline.
-4. **Failure semantics unchanged**: the adapter sets no internal timeout and passes `signal` through; the main extension's 25s timeout, parse failures, and network errors all land in the existing fail-closed deny.
-5. **Self-protection coverage comes for free**: under the same-package npm-dir install form, the adapter copy automatically joins the tamper-detection baseline through #26's whole-package enumeration (pinned by a regression test); it sits on the permission path, so tampering triggers the existing restore + fail-closed.
-6. **Misuse guard**: selecting a `typesafe/*` model via `model_select` warns (a decisions model generates no text and cannot drive a session); the endpoint URL is overridable via `PI_VERDICT_JEV_URL` (insurance against alpha-API drift).
+1. **Second bundled extension, lazily effective**: `extensions/jev-adapter.ts` shipped in the same package and registered `typesafe/jev-latest` via the host's provider registration. Unless `classifierModel` pointed at it or credentials resolved, the adapter took no part in adjudication.
+2. **Credentials reuse the host's system, no second channel**: two transports shared one adapter; the OpenRouter transport resolved the host's provider auth, the TypeSafe transport read `TYPESAFE_API_KEY` through the same provider auth pipeline — never a bare fetch or a second credential store.
+3. **Translation contract**: state = the classifier request's last user message (the transcript); the question is a fixed allow/ask/deny `choice` (criteria mirror `CLASSIFIER_SYSTEM`, keeping the evidence-not-instruction discipline and the err-on-ask default); the response is synthesized into a user-readable `<verdict>{choice}</verdict> jev: ask 63% (confidence 45%; allow 35%, deny 2%)`.
+4. **Failure semantics unchanged**: the adapter set no internal timeout and passed `signal` through; the main extension's 25 s timeout, parse failures, and network errors all landed in the existing fail-closed deny.
+5. **Self-protection coverage came for free**: under the same-package npm-dir install form, the adapter copy joined the tamper-detection baseline through whole-package enumeration.
+6. **Misuse guard**: selecting a `typesafe/*` model via model selection warned (a decisions model generates no text and cannot drive a session).
 
-## Known limitations
+## Known limitations (as recorded then)
 
-- **The denyPaths existence hint does not reach jev**: the adapter ignores the incoming systemPrompt (the hint lives there); denyPaths themselves remain rule-enforced before the classifier, so only the gray-zone strictening signal is lost.
-- **State injection surface**: per the quoted docs, jev does not treat state as hostile by default; mitigation rests on the rule layer running first (hard deny/ask precede the classifier) and the main extension's transcript sanitization, but classifier-layer prompt-injection resistance is weaker than the LLM backend's, which carries its own evidence-not-instruction system prompt.
-- **The reason is a templated probability/confidence line**, not a natural-language explanation (a UX regression for ask dialogs).
-- **omp hosts are unaffected** (no `registerProvider`); `classifierModel` pointing at `typesafe/*` follows the existing fallback-with-warning path there.
-- The OpenRouter endpoint is alpha and its schema may evolve; TypeSafe's v1 is official but the latest alias tracks the newest snapshot, so verdict behavior may shift across snapshots on either transport (`PI_VERDICT_JEV_URL` remains the drift escape hatch). TypeSafe's API does not report per-call cost (it surfaces as $0).
+- **The denyPaths existence hint did not reach jev**: the adapter ignored the incoming systemPrompt, where the hint lived; denyPaths themselves remained rule-enforced before the classifier, so only the gray-zone strictness signal was lost.
+- **State injection surface**: jev does not treat state as hostile by default; mitigation rested on the rule layer running first and the main extension's transcript sanitization, but classifier-layer prompt-injection resistance was weaker than the LLM backend's.
+- **The reason was a templated probability/confidence line**, not a natural-language explanation.
+- The OpenRouter endpoint was alpha and its schema could evolve; TypeSafe's API did not report per-call cost (it surfaced as $0).
 
-## Alternatives considered
+## Why it was superseded
 
-- **Wait for native decisions-modality support in pi/pi-ai (zero code)**: blocked on upstream scheduling with no timeline; the adapter is an explicitly transitional layer that can be dropped wholesale once native support lands.
-- **Direct fetch inside pi-verdict**: breaks the existing "extensions are model-agnostic, credentials flow through pi" architecture (adding a direct-connection code path and a new self-protection surface beyond ADR-0001); rejected.
-- **Splice the systemPrompt into state**: would preserve the existence hint, but injects an LLM-voiced system prompt into state, disturbing jev's calibration; rejected for v1, recorded as a known limitation.
-- **Env-only credentials (the third-party pi-jev form)**: a second credential channel escapes `/logout` jurisdiction and stays invisible to auth.json; contradicts the "reuse pi's system" motivation; rejected. *(2026-09-19 note: the typesafe transport reads `TYPESAFE_API_KEY` env-only — pi offers no typesafe login to reuse — but through the provider auth pipeline; what was rejected is the bare-fetch escape from pi's provider system, not the absence of a login worth reusing.)*
-- **Pin the version to `typesafe/jev-1.13`**: reproducible but requires manual version tracking; v1 uses the latest alias, with the actual snapshot observable through the response's `model` field.
+Native classifier support landed upstream (ADR-0005), which made the hand-built adapter redundant. In this omp fork the equivalent capability arrives through omp's typed-judgment client: a judgment-kind catalog model answers the same `choice` question directly, with protocol-native probabilities and confidence, so neither an adapter nor a provider registration is needed.
 
 ## Consequences
 
-- Package grows by one file; users who don't opt in merely load an inert extension (provider registration plus two event hooks, no requests).
-- `classifierModel` semantics widen from "LLM provider/model" to "any model registered through pi"; CONTEXT.md is synced (jev adapter / typed decision / verdict prefix contract entries).
-- jev's verdict quality is unverified against adversarial samples (the F-series review bypass cases); enabling it accepts its experimental nature; the rule layer (built-in floor + user deny + denyPaths) remains the primary defense — the classifier only takes the gray zone.
+- No adapter ships. `classifierModel` accepts a judgment-kind model spec, and the extension builds the judge from the catalog entry at call time.
+- The historical contract survives in the reason line: judgment answers still render the `jev:` probability breakdown, so audit corpora stay comparable across the migration.
+- The state-injection caveat is unchanged and still mitigated the same way: the deterministic layers run before the classifier, and the transcript is sanitized.

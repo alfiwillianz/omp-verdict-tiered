@@ -244,38 +244,31 @@ describe("Tier 2 response parsing", () => {
 });
 
 describe("Tier 2 model resolution (role → smol → session)", () => {
-	const registry = (roles: Record<string, unknown>) => ({
-		getModelForRole: (role: string) => roles[role],
-		hasConfiguredAuth: () => true,
+	/** omp's ctx.models facade: resolve(provider/id | bare id | @role). */
+	const models = (bySpec: Record<string, unknown>, auth = true) => ({
+		resolve: (spec: string) => bySpec[spec],
+		hasConfiguredAuth: () => auth,
 	});
 	test("configured role wins", () => {
-		const resolved = resolveAdjudicatorModel(registry({ adjudicator: { id: "adj" }, smol: { id: "smol" } }), { id: "session" }, "adjudicator");
+		const resolved = resolveAdjudicatorModel(models({ "@adjudicator": { id: "adj" }, "@smol": { id: "smol" } }), { id: "session" }, "adjudicator");
 		expect(resolved).toEqual({ model: { id: "adj" }, role: "adjudicator" });
 	});
 	test("falls back to smol when the configured role is absent", () => {
-		const resolved = resolveAdjudicatorModel(registry({ smol: { id: "smol" } }), { id: "session" }, "adjudicator");
+		const resolved = resolveAdjudicatorModel(models({ "@smol": { id: "smol" } }), { id: "session" }, "adjudicator");
 		expect(resolved).toEqual({ model: { id: "smol" }, role: "smol" });
 	});
-	test("falls back to the session model when the registry has no role API (pi)", () => {
-		const resolved = resolveAdjudicatorModel({ hasConfiguredAuth: () => true }, { id: "session" }, "adjudicator");
+	test("falls back to the session model when no role resolves", () => {
+		const resolved = resolveAdjudicatorModel(models({}), { id: "session" }, "adjudicator");
 		expect(resolved).toEqual({ model: { id: "session" }, role: "session" });
 	});
-	test("classifier-typed entries and unauthenticated models are skipped", () => {
-		const reg = {
-			getModelForRole: (role: string) => (role === "adjudicator" ? { id: "clf", type: "classifier" } : undefined),
-			hasConfiguredAuth: () => true,
-		};
-		expect(resolveAdjudicatorModel(reg, { id: "session" }, "adjudicator")).toEqual({ model: { id: "session" }, role: "session" });
-		const noAuth = { getModelForRole: () => ({ id: "x" }), hasConfiguredAuth: () => false };
-		expect(resolveAdjudicatorModel(noAuth, { id: "session" }, "adjudicator")).toBeNull();
+	test("judgment-kind entries and unauthenticated models are skipped", () => {
+		const reg = models({ "@adjudicator": { id: "judge", kind: "judge" }, "@smol": { id: "smol" } });
+		expect(resolveAdjudicatorModel(reg, { id: "session" }, "adjudicator")).toEqual({ model: { id: "smol" }, role: "smol" });
+		expect(resolveAdjudicatorModel(models({ "@adjudicator": { id: "x" } }, false), { id: "session" }, "adjudicator")).toBeNull();
 	});
-	test("provider/id role strings resolve through find()", () => {
-		const reg = {
-			getModelForRole: () => "prov/model-x",
-			find: (p: string, id: string) => (p === "prov" && id === "model-x" ? { id } : undefined),
-			hasConfiguredAuth: () => true,
-		};
-		expect(resolveAdjudicatorModel(reg, null, "adjudicator")).toEqual({ model: { id: "model-x" }, role: "adjudicator" });
+	test("a bare provider/id role value resolves through ctx.models.resolve", () => {
+		const resolved = resolveAdjudicatorModel(models({ "@adjudicator": { id: "model-x" } }), null, "adjudicator");
+		expect(resolved).toEqual({ model: { id: "model-x" }, role: "adjudicator" });
 	});
 });
 
@@ -793,12 +786,9 @@ describe("config template + handler fail-closed", () => {
 			sessionManager: { getBranch: () => [], getSessionId: () => "s1" },
 			modelRegistry: {
 				find: () => null,
-				findOfType: () => undefined,
 				hasConfiguredAuth: () => true,
-				complete: async () => {
-					throw new Error("network down");
-				},
 			},
+			models: { resolve: () => null, current: () => undefined, list: () => [], family: () => "mock" },
 			ui: {
 				notify: (message: string, level: string) => notifies.push([message, level]),
 				confirm: async () => {

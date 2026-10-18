@@ -1,21 +1,19 @@
 # Diagrams
 
-Source-of-truth authoring specs for the documentation diagrams. The SVGs are
-export artifacts — regenerate them from the specs instead of editing by hand.
+Source-of-truth authoring specs for the documentation diagrams. The SVG is an
+export artifact — regenerate it from the spec instead of editing by hand.
 
 | file | role |
 |---|---|
-| `security-pipeline.workflow.json` | English pipeline-diagram spec (source of truth) |
-| `security-pipeline.workflow.zh.json` | Chinese pipeline-diagram spec (source of truth) |
+| `security-pipeline.workflow.json` | pipeline-diagram spec (source of truth) |
 | `security-pipeline.en.svg` | exported embed for [README.md](../README.md) |
-| `security-pipeline.zh.svg` | exported embed for [README.zh-CN.md](../README.zh-CN.md) |
 
-Both SVGs are dual-theme: they embed a `prefers-color-scheme: dark` variant and
-adapt automatically on GitHub and in most renderers.
+The SVG is dual-theme: it embeds a `prefers-color-scheme: dark` variant and
+adapts automatically on GitHub and in most renderers.
 
 ## Regenerating
 
-The specs author with the [archify](https://github.com/tt-a1i/archify) workflow
+The spec authors with the [archify](https://github.com/tt-a1i/archify) workflow
 skill (installed locally, not a repo dependency):
 
 ```bash
@@ -27,14 +25,13 @@ archify deliver workflow security-pipeline.workflow.json security-pipeline.en.ht
 ```
 
 Then open the HTML, use **Export → SVG (editable vector, dual-theme)**, and
-replace the matching `.svg` file. Keep both language specs in sync on
-pipeline-structure changes (only string fields differ).
+replace `security-pipeline.en.svg`.
 
-Baseline: adjudication pipeline as of v0.14 + the ADR-0008 subagent-artifacts
-label (the rule-layer allow exit reads `allow / ignoreTools /
-subagent-artifacts·headless / nested·rules-only`; #22/#62/#71/#73/#90
-semantics included — native classifier path, nested-call policy). SVGs are
-regenerated from these specs (2026-10-06, `quality: standard` — the
-`showcase` composition validator flags 4 pre-existing layout findings on
-the v0.14 baseline that are unrelated to the label change; standard
-profile treats them as warnings and passes).
+## Baseline
+
+The spec predates this fork's omp port and still describes the upstream v0.14
+pipeline, including two features this fork does not ship: the
+`subagent-artifacts·headless` rule-layer allow (ADR-0008) and the
+`nested·rules-only` policy (ADR-0006). Regenerate the diagram after updating
+the spec to the omp pipeline in [README.md](../README.md#pipeline) — the ASCII
+pipeline in the README is the current, text-faithful reference.

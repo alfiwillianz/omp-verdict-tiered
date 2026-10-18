@@ -1,21 +1,32 @@
 # 0006 - Nested codemode calls: layered exemption policy + audit attribution
 
 ---
-status: accepted
+status: withdrawn in the omp fork (not implementable on omp 18)
 date: 2026-10-02
 ---
 
-pi ≥ 0.99's codemode runs model-written JavaScript whose tool calls re-enter the `tool_call` pipeline as nested calls (`parentToolCallId` set, ids `<parent>/<n>`); pi routes them through the handlers by design, and pi-verdict gates them identically to direct calls (live-fire verified 2026-10-02, PR #89 pins it). That identity amplifies cost: gray-zone adjudication is serial, measured at ~350ms per nested call (jev) — a 50-call `Promise.all` batch pays ~17.5s of pure gating latency, the 256-call cap ~90s (an LLM classifier's p90 ≈ 20s multiplies that to ~85min). Users faced a binary: full gating latency or `/automode off`.
+> **Fork note.** This ADR is kept for the record. The feature it describes does not
+> exist in this fork, and `codemodeNestedCalls` is not a recognized config key.
 
-pi-verdict 0.14 adds `codemodeNestedCalls` (default `"gate"` = unchanged identity) with `"rules-only"` as an opt-in layered exemption: nested calls keep every deterministic layer — self-protection (ADR-0001), the built-in deny floor, user rules, denyPaths with its terminal ask — and skip only the classifier + confidence cascade; the gray zone passes. Recorded in the audit (`source: "rule"`, `policy: "rules-only"`), because the user needs corpus data on what the opt-in lets through. Alongside (mode-independent), audit records gain `toolCallId` / `parentToolCallId` attribution — the live-fire session showed nested records were field-for-field indistinguishable from direct calls.
+## What it did upstream
 
-## Rejected alternatives
+pi ≥ 0.99's codemode runs model-written JavaScript whose tool calls re-enter the `tool_call` pipeline as nested calls (`parentToolCallId` set, ids `<parent>/<n>`). Gating them identically to direct calls amplified cost: gray-zone adjudication is serial, measured at ~350 ms per nested call — a 50-call `Promise.all` batch paid ~17.5 s of pure gating latency, and the 256-call cap ~90 s.
 
-- **Full skip for sandbox calls**: the QuickJS sandbox constrains the script, not the tools — script-issued `bash` is real privileged execution, so skipping is a complete bypass (wrap any blocked action in a script); it would also drop the self-protection layer's preventive denies to post-hoc tamper detection.
-- **Static script-source analysis**: dynamically constructed commands defeat it; not a security boundary.
-- **Session-level trust after one confirm**: privilege persistence across the script/session violates least privilege.
+Upstream 0.14 therefore added `codemodeNestedCalls` (default `"gate"` = unchanged identity) with `"rules-only"` as an opt-in layered exemption: nested calls kept every deterministic layer — self-protection, the built-in deny floor, user rules, denyPaths with its terminal ask — and skipped only the classifier plus the confidence cascade, so the gray zone passed. Audit records carried `source: "rule"` and `policy: "rules-only"`, plus `toolCallId` / `parentToolCallId` attribution.
 
-## Consequences
+## Why it is withdrawn here
 
-- **The honest cost of rules-only**: rule-passing actions the classifier would have caught now pass — e.g. a nested `bash head ~/.ssh/config` (live-fire record: the jev+fallback layer denied it) passes unless `~/.ssh` is a denyPaths declaration, in which case bash token extraction still asks. Deterministic coverage beyond the floor is denyPaths-declaration-dependent; the configuration docs state this.
-- Gate stays the default; direct calls are byte-identical under both modes; PR #89's baseline tests pin the identity.
+omp's `tool_call` event carries `toolName`, `toolCallId`, and `input` — **there is no `parentToolCallId`**. The host does not expose a parent linkage for calls issued from `eval` scripts or from `task` subagents, and the extension cannot infer one reliably (a subagent session presents as an independent session with its own id; an `eval` script's nested calls arrive as ordinary tool calls).
+
+Without a trustworthy "is this nested?" signal, a `rules-only` mode would either:
+
+- apply to every call (a complete bypass of the classifier — unacceptable), or
+- apply to a guessed subset (a guessed exemption is a guessed hole).
+
+Both are worse than not having the feature. The latency motivation also differs on omp: nested calls through `eval` are not capped at 256 per script in the same way, and the tiered path (ADR-0009) removes most of the per-call network cost anyway.
+
+## What remains
+
+- Every call is adjudicated identically, direct or nested.
+- Audit records still carry `toolCallId`, so corpora can still distinguish call identity (just not parentage).
+- If omp later exposes a parent linkage on the `tool_call` event, this ADR can be revisited; the deterministic-layer split it describes is still the right shape.

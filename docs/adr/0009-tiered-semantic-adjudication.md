@@ -5,7 +5,7 @@ status: accepted
 date: 2026-10-17
 ---
 
-The gray zone has been one classifier call since ADR-0005 (native `classify()` or an LLM prompt). That call is the gate's dominant per-call cost and its dominant latency source: every ambiguous `bash`/`powershell` command, every uncovered MCP tool, every outside-project write waits for a network round-trip, and a classifier outage turns the gray zone into ask/deny.
+The gray zone has been one classifier call since ADR-0005 (a typed judgment or a chat prompt). That call is the gate's dominant per-call cost and its dominant latency source: every ambiguous `bash`/`powershell` command, every uncovered MCP tool, every outside-project write waits for a network round-trip, and a classifier outage turns the gray zone into ask/deny.
 
 The production corpus says most of that spend is unnecessary. Of the gray-zone calls that reach a classifier, the large majority are ordinary developer commands (`ls`, `git status`, `cargo build`, reads inside the project) whose risk is decidable from the command string alone. A local model that is right about those calls removes the network from the hot path; a model that is unsure should still get the full session context.
 
@@ -14,7 +14,7 @@ Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` 
 ## Tier 1 — local LANCET-Nano triage
 
 - **Model**: `fingerthief/lancet-nano` v0.4.3, a CodeT5+ 220M encoder with a windowed pooling head, shipped as a 111 MB INT8 ONNX encoder plus a 4.7 MB float head (Apache-2.0 model, MIT runtime). Runs on CPU through `onnxruntime-node`; no network, no API key.
-- **Scope**: shell tools only (`bash`, `powershell`, `cmd`; pi's `exec` is triaged as bash). Non-shell tools bypass Tier 1 — the model classifies command strings, not paths or MCP arguments.
+- **Scope**: shell tools only (`bash` on POSIX; `powershell`/`cmd` when omp runs a Windows shell). Non-shell tools bypass Tier 1 — the model classifies command strings, not paths or MCP arguments.
 - **Contract reproduced from the reference runtime**: byte-level BPE (`vocab.json` + `merges.txt`), `<s>`/`</s>` framing, 510-payload-token windows with 64-token overlap, mean+max pooling of every payload token exactly once, projection → LayerNorm → 2-way head, banding on the raw risk logit. The **512-token window is the decision ceiling**: longer commands escalate instead of being truncated (a truncated tail can hide the risky part) or scored beyond the model's characterized context. The 8,192-byte cap is the reference runtime's own input limit.
 - **Bands**:
   - `not_flagged` → **allow** immediately, zero network activity.
@@ -26,7 +26,7 @@ Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` 
 
 ## Tier 2 — model-registry adjudicator
 
-- **Resolution**: `context.modelRegistry.getModelForRole(role)` → `"smol"` → the session model. `role` defaults to `"adjudicator"` (`tier2Role`). pi 1.0.0 has no role API; the session model is then the documented fallback (the pre-0.16 self-reflection behavior). Classifier-typed entries are skipped — Tier 2 needs a generative JSON answer, not a label distribution. Entries without configured auth are skipped. Resolution is lazy: a Tier 1 `not_flagged` call never pays it or emits its warning.
+- **Resolution**: omp's `ctx.models.resolve` with role aliases — the configured role (`@adjudicator`) → `@smol` → the session model. `role` defaults to `"adjudicator"` (`tier2Role`). Judge-kind entries are skipped — Tier 2 needs a generative JSON answer, not a label distribution. Entries without configured auth are skipped. Resolution is lazy: a Tier 1 `not_flagged` call never pays it or emits its warning.
 - **Input**: a JSON payload with the tool name and arguments, the condensed transcript (the same #22-hardened builder the legacy classifier uses: recent user messages + tool calls, action pinned last, line-break forging defended), and Tier 1's band/probability/reason. The denyPaths existence hint is appended when protected paths are configured (zero plaintext, ADR-0002).
 - **Contract**: strict JSON `{"verdict":"allow"|"ask"|"deny","reason":"brief string"}`. Fenced JSON is tolerated; prose, malformed JSON, an invalid verdict or a non-string reason are contract violations and fail closed. No `<verdict>` prefix — that contract belonged to the chat path's text parser.
 - **Mapping**: Tier 2 `allow` → allow. Tier 2 `ask` **or** `deny` → **ask**. A model may not auto-deny at this tier: the task's contract reserves automatic denial for Tier 1's risky band, and an ask costs one keypress while a wrong deny is invisible. Headless sessions degrade the ask to deny (the standing rule).
@@ -36,7 +36,7 @@ Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` 
 
 The tiered path replaces exactly the gray-zone classifier block: after self-protection, the built-in floor, user deny, denyPaths ask, user allow, the ADR-0008 artifact exemption, and the ADR-0006 nested-call policy. Rule-layer allows/denies still outrank it and still cost zero model calls.
 
-`exec` (pi's generic shell tool) is triaged as bash; `cmd` (Windows) is passed to the model's `cmd` shell profile. Tier 1 only runs when `tier1Lancet.enabled` is true; disabling it sends shell calls straight to Tier 2 with no triage block in the payload.
+`cmd` (Windows) is passed to the model's `cmd` shell profile. Tier 1 only runs when `tier1Lancet.enabled` is true; disabling it sends shell calls straight to Tier 2 with no triage block in the payload.
 
 ## Configuration
 

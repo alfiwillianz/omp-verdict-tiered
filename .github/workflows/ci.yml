@@ -36,11 +36,11 @@ jobs:
       - name: README asset URLs resolve
         run: |
           set -euo pipefail
-          grep -hoE 'https://(raw\.githubusercontent\.com|cdn\.jsdelivr\.net/gh)/[^) ]+' README.md README.zh-CN.md \
+          grep -hoE 'https://(raw\.githubusercontent\.com|cdn\.jsdelivr\.net/gh)/[^) ]+' README.md \
           | sort -u \
           | sed -E \
-              -e "s#(raw\.githubusercontent\.com/jesset/pi-verdict)/main#\1/${GITHUB_SHA}#" \
-              -e "s#(cdn\.jsdelivr\.net/gh/jesset/pi-verdict)@main#\1@${GITHUB_SHA}#" \
+              -e "s#(raw\.githubusercontent\.com/alfiwillianz/pi-verdict-tiered)/main#\1/${GITHUB_SHA}#" \
+              -e "s#(cdn\.jsdelivr\.net/gh/alfiwillianz/pi-verdict-tiered)@main#\1@${GITHUB_SHA}#" \
           | while read -r url; do
               if ! curl -fsSI --max-time 30 "$url" >/dev/null; then
                 echo "::error::broken README asset: $url"

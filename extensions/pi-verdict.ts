@@ -3,7 +3,7 @@
  *
  * Tool-call permission is adjudicated automatically by "rule layer + model classifier",
  * no per-call human approval. Semantically aligned with Claude Code Auto Mode but
- * inverted: pi defaults to allowing → this extension intercepts.
+ * inverted: omp defaults to allowing → this extension intercepts.
  *
  * Pipeline (tool_call hook):
  *   0. Self-protection layer (ADR-0001, cannot be exempted by any config): write/edit/bash
@@ -90,7 +90,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { completeSimple, createNativeJudge, isJudgmentApi } from "@oh-my-pi/pi-ai";
+import type { Answer, Judge, Questions } from "@oh-my-pi/pi-ai";
 import type { AdjudicatorModel } from "../src/classifiers/omp-adjudicator";
 import type { SemanticAdjudicationConfig, ShellKind, Tier1Fn } from "../src/classifiers/tiered";
 
@@ -117,6 +119,18 @@ const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> 
 ];
 
 type RuleVerdict = "allow" | "deny" | "gray" | "ask";
+
+/** Combine per-target gradings into one verdict: deny > gray > allow, first reason
+ *  of the winning grade wins. Multi-path tools (omp's `ast_edit` batch rewrite,
+ *  `ast_grep` scope list) grade every target so one protected target blocks the
+ *  whole call — a batch must never launder a protected path through a safe sibling. */
+function strictest(results: RuleResult[]): RuleResult {
+	const rank: Record<RuleVerdict, number> = { allow: 0, gray: 1, ask: 2, deny: 3 };
+	let best: RuleResult = { verdict: "allow" };
+	for (const r of results) if (rank[r.verdict] > rank[best.verdict]) best = r;
+	return best;
+}
+
 interface RuleResult {
 	verdict: RuleVerdict;
 	reason?: string;
@@ -245,7 +259,7 @@ function resolveToggleShortcut(raw: unknown): { key: string | null; warning: str
 	const s = raw.trim();
 	if (!s) return { key: null, warning: null };
 	if (!KEY_COMBO_RE.test(s)) {
-		return { key: null, warning: `toggleShortcut "${raw}" is not a valid pi key combo (modifier+key, e.g. "${DEFAULT_TOGGLE_SHORTCUT}") — shortcut not registered; fix config/pi-verdict.json` };
+		return { key: null, warning: `toggleShortcut "${raw}" is not a valid omp key combo (modifier+key, e.g. "${DEFAULT_TOGGLE_SHORTCUT}") — shortcut not registered; fix config/pi-verdict.json` };
 	}
 	return { key: s, warning: null };
 }
@@ -283,14 +297,6 @@ export interface UserRules {
 	/** #67: does the second layer adjudicate cascaded calls ("enforce", default since
 	 *  0.12.0) or only record its opinion while the human decides ("shadow")? */
 	classifierFallbackMode: "shadow" | "enforce";
-	/** #90/ADR-0006: nested-call policy. "gate" (default) = nested calls adjudicate
-	 *  identically to direct calls; "rules-only" = nested calls keep every
-	 *  deterministic layer (self-protection, floor, user rules, denyPaths + its ask)
-	 *  and skip only the classifier + cascade — the gray zone passes, because serial
-	 *  adjudication of codemode batches amplifies per-call latency (live-fire:
-	 *  ~350ms/call). Opt-in: rule-passing actions the classifier would have caught
-	 *  pass under rules-only (coverage is denyPaths-declaration-dependent). */
-	codemodeNestedCalls: "gate" | "rules-only";
 	/** ADR-0007: redact secret-shaped text from audit records before append.
 	 *  Default true; false is the explicit keep-raw escape hatch. */
 	auditRedactSecrets: boolean;
@@ -312,7 +318,7 @@ export const DEFAULT_SEMANTIC_ADJUDICATION: SemanticAdjudicationConfig = {
 	tier2TimeoutMs: 5000,
 };
 
-const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], ignoreTools: [], builtinDenyFloor: true, classifierModel: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", codemodeNestedCalls: "gate", auditRedactSecrets: true, semanticAdjudication: null };
+const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], ignoreTools: [], builtinDenyFloor: true, classifierModel: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", auditRedactSecrets: true, semanticAdjudication: null };
 
 /** This module's own file location (import.meta.url resolved; null = unresolvable). */
 const OWN_FILE_PATH: string | null = (() => {
@@ -324,18 +330,18 @@ const OWN_FILE_PATH: string | null = (() => {
 })();
 
 /**
- * Resolve the agent directory the gate is anchored to (#35, dual-host):
- *   1. PI_CODING_AGENT_DIR — explicit user override, always wins.
+ * Resolve the agent directory the gate is anchored to (#35, omp-only):
+ *   1. PI_CODING_AGENT_DIR — omp's own default-profile agent-dir override, wins.
  *   2. Self-anchoring from the extension's own installed path: a copy at
  *      <home>/<dot-dir>/(agent/)?(plugins/node_modules/<pkg>/)?extensions/…
- *      anchors to <home>/<dot-dir>/agent. Covers the pi forms
- *      (~/.pi/agent/extensions[/pkg]/…) and the two omp npm layouts:
- *      under the agent dir (~/.omp/agent/plugins/node_modules/<pkg>/…) and,
- *      since omp 18.1, next to it (~/.omp/plugins/node_modules/<pkg>/…) —
- *      omp keeps its config tree under <dot-dir>/agent in both layouts.
- *      Deliberately NO host-tree existence probing: on a dual-install machine
- *      running under pi, a present ~/.omp must not misroute the gate.
- *   3. Fallback: today's default (~/.pi/agent) — dev checkouts and any
+ *      anchors to <home>/<dot-dir>/agent. Covers the plain extension dir
+ *      (~/.omp/agent/extensions/…) and the two plugin layouts: under the agent
+ *      dir (~/.omp/agent/plugins/node_modules/<pkg>/…) and, since omp 18.1,
+ *      next to it (~/.omp/plugins/node_modules/<pkg>/…) — omp keeps its config
+ *      tree under <dot-dir>/agent in both layouts.
+ *      Deliberately NO host-tree existence probing: a present ~/.pi must not
+ *      misroute the gate.
+ *   3. Fallback: omp's default (~/.omp/agent) — dev checkouts and any
  *      unanchored location.
  * Both the lexical and the realpath form of ownFile are tried (symlinked
  * agent trees, macOS firmlink homes).
@@ -349,7 +355,7 @@ export function resolveAgentDir(ownFile: string | null, home: string, envAgentDi
 			if (m) return path.join(home, m[2], "agent");
 		}
 	}
-	return path.join(home, ".pi", "agent");
+	return path.join(home, ".omp", "agent");
 }
 
 function agentDirPath(): string {
@@ -462,7 +468,7 @@ function loadUserRules(): { rules: UserRules; skipped: string[]; shortcutWarning
 			} catch { /* 只读环境静默跳过 */ }
 			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null };
 		}
-		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; ignoreTools?: unknown; builtinDenyFloor?: unknown; classifierModel?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; codemodeNestedCalls?: unknown; auditRedactSecrets?: unknown; semanticAdjudication?: unknown };
+		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; ignoreTools?: unknown; builtinDenyFloor?: unknown; classifierModel?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; auditRedactSecrets?: unknown; semanticAdjudication?: unknown };
 		try {
 			raw = JSON.parse(fs.readFileSync(p, "utf8")) as typeof raw;
 		} catch (err) {
@@ -507,9 +513,6 @@ function loadUserRules(): { rules: UserRules; skipped: string[]; shortcutWarning
 		if (minConfRaw !== undefined && minConfRaw !== null && !minConfOk) skipped.push(`classifierMinConfidence: ${JSON.stringify(minConfRaw)}`);
 		const fbModeRaw = raw.classifierFallbackMode;
 		if (fbModeRaw !== undefined && fbModeRaw !== "shadow" && fbModeRaw !== "enforce") skipped.push(`classifierFallbackMode: ${JSON.stringify(fbModeRaw)}`);
-		// #90: nested-call policy — invalid values skip into the one-shot warning channel
-		const nestedRaw = raw.codemodeNestedCalls;
-		if (nestedRaw !== undefined && nestedRaw !== "gate" && nestedRaw !== "rules-only") skipped.push(`codemodeNestedCalls: ${JSON.stringify(nestedRaw)}`);
 		// ADR-0007: audit redaction — non-boolean values skip into the one-shot warning channel, redaction stays on
 		if (raw.auditRedactSecrets !== undefined && typeof raw.auditRedactSecrets !== "boolean") skipped.push(`auditRedactSecrets: ${JSON.stringify(raw.auditRedactSecrets)}`);
 		// ADR-0009: tiered adjudication — every invalid field falls back to its default
@@ -529,7 +532,6 @@ function loadUserRules(): { rules: UserRules; skipped: string[]; shortcutWarning
 				classifierFallbackModel: typeof raw.classifierFallbackModel === "string" && raw.classifierFallbackModel.trim() ? raw.classifierFallbackModel.trim() : null,
 				classifierMinConfidence: minConfOk ? minConfRaw : null,
 				classifierFallbackMode: fbModeRaw === undefined ? "enforce" : fbModeRaw === "enforce" ? "enforce" : "shadow", // invalid values land on the conservative shadow (standing invalid-config precedent); the key-less default is enforce
-				codemodeNestedCalls: nestedRaw === "rules-only" ? "rules-only" : "gate", // invalid values keep the safe default (gate)
 				auditRedactSecrets: raw.auditRedactSecrets !== false, // default on; only an explicit false disables (ADR-0007)
 				semanticAdjudication: semantic,
 			},
@@ -556,7 +558,10 @@ function expandHome(p: string): string {
 // the occasional false positive fails toward deny (safe direction).
 const S0_SECRET = [
 	/\.ssh(\/|$)/i, /\.aws(\/|$)/i, /\.gnupg(\/|$)/i, /(^|\/)\.env(\.|$)/i, /credentials?(\.|\/|$)/i,
-	/(^|\/)id_rsa/i, /\.pem$/i, /_history$/i, /\.config\/gh(\/|$)/i, /\.(?:pi|omp)\/agent\/auth\.json$/i,
+	/(^|\/)id_rsa/i, /\.pem$/i, /_history$/i, /\.config\/gh(\/|$)/i,
+	// omp credential stores: agent.db holds saved API keys/OAuth tokens, secrets.yml
+	// the project/global secret store. Both are S0: reads deny, writes deny.
+	/\.omp\/agent\/agent\.db$/i, /\.omp\/(?:agent\/)?secrets\.yml$/i,
 	// V8(安全审计):常见明文凭证文件补全
 	/(^|\/)\.netrc$/i, /(^|\/)\.npmrc$/i, /(^|\/)\.pypirc$/i, /(^|\/)\.envrc$/i, /(^|\/)\.vault-token$/i,
 	/\.kube(\/|$)/i, /\.docker\/config\.json$/i, /\.gem\/credentials$/i,
@@ -663,41 +668,63 @@ function classifyPath(toolName: string, rawPath: string, cwd: string, isWrite: b
  *  "file" tools carry a path argument; null = outside both families (MCP/custom →
  *  classifier only). Adding a file tool means extending this one map. The
  *  self-protection layer is deliberately NOT a consumer: it matches write paths +
- *  bash only (reads pass — its set is not the file family). */
+ *  bash only (reads pass — its set is not the file family).
+ *
+ *  omp's built-in tool set: `bash` is the only command tool (omp has no separate
+ *  PowerShell tool; on Windows bash runs through the configured shell), and the
+ *  file tools are read/write/edit/grep/glob/find/ast_edit/ast_grep. */
 function toolKind(toolName: string): "command" | "file" | null {
 	switch (toolName) {
 		case "bash":
-		case "powershell":
 			return "command";
 		case "read":
 		case "write":
 		case "edit":
 		case "grep":
+		case "glob":
 		case "find":
-		case "ls":
+		case "ast_edit":
+		case "ast_grep":
 			return "file";
 		default:
 			return null;
 	}
 }
 
-/** Scope tools (grep/find/ls): pi's schema makes `path` optional (default:
- *  current directory) and the search covers a directory SUBTREE — an omitted or
- *  empty path means the cwd is the effective target (#48). */
+/** Scope tools: omp's schemas make `path` optional (default: the workspace root)
+ *  and the search covers a directory SUBTREE — an omitted or empty path means the
+ *  cwd is the effective target (#48). `ast_grep` accepts a semicolon-delimited
+ *  list, and `ast_edit` carries `paths[]`; both are handled by pathTargets(). */
 function isScopeTool(toolName: string): boolean {
-	return toolName === "grep" || toolName === "find" || toolName === "ls";
+	return toolName === "grep" || toolName === "glob" || toolName === "find" || toolName === "ast_grep";
 }
 
-/** 用户规则匹配目标:bash/powershell=完整命令串;路径类工具=解析后绝对路径;其余工具不参与。
+/** Every path argument a file tool exposes, in declaration order. Most tools carry
+ *  a single `path`; `ast_edit` writes `paths[]` (a batch rewrite), and `ast_grep`
+ *  accepts a semicolon-delimited scope list. Returns [] for a non-path tool. */
+export function pathTargets(toolName: string, input: Record<string, unknown>): string[] {
+	if (toolName === "ast_edit") {
+		return Array.isArray(input.paths) ? input.paths.filter((p): p is string => typeof p === "string" && p.length > 0) : [];
+	}
+	const single = typeof input.path === "string" && input.path ? input.path : null;
+	if (single === null) return [];
+	if (toolName === "ast_grep") {
+		const parts = single.split(";").map((p) => p.trim()).filter(Boolean);
+		return parts.length > 0 ? parts : [single];
+	}
+	return [single];
+}
+
+/** 用户规则匹配目标:bash=完整命令串;路径类工具=解析后绝对路径;其余工具不参与。
  *  Scope tools with an omitted path resolve to the cwd (#48) — user rules match
  *  the effective target, never a null that skips the whole rule block. */
 function userRuleTarget(toolName: string, input: Record<string, unknown>, cwd: string): string | null {
 	const kind = toolKind(toolName);
 	if (kind === "command") return String(input.command ?? "");
 	if (kind === "file") {
-		const p = typeof input.path === "string" && input.path ? input.path : null;
-		if (!p) return isScopeTool(toolName) ? path.resolve(cwd) : null;
-		return path.resolve(cwd, expandHome(p));
+		const targets = pathTargets(toolName, input);
+		if (targets.length === 0) return isScopeTool(toolName) ? path.resolve(cwd) : null;
+		return path.resolve(cwd, expandHome(targets[0]));
 	}
 	return null;
 }
@@ -859,9 +886,9 @@ function denyPathCandidates(toolName: string, input: Record<string, unknown>, cw
 	const kind = toolKind(toolName);
 	if (kind === "command") return bashPathTokens(String(input.command ?? "")); // #32: linear — the regex stays as the test oracle
 	if (kind === "file") {
-		const p = typeof input.path === "string" && input.path ? input.path : null;
-		if (!p) return isScopeTool(toolName) ? [cwd] : [];
-		return [p];
+		const targets = pathTargets(toolName, input);
+		if (targets.length === 0) return isScopeTool(toolName) ? [cwd] : [];
+		return targets;
 	}
 	return [];
 }
@@ -910,8 +937,6 @@ interface ProtectedSet {
 	prefixes: string[];
 	/** 读拒绝前缀(#54):verdicts 审计目录——记录含不可信原始输出,禁回流 agent context */
 	readPrefixes: string[];
-	/** Subagent-artifacts write-exemption tree (ADR-0008): <agentDir>/sessions — headless write/edit to its subagent-artifacts subtree passes deterministically */
-	runtimeWritePrefixes: string[];
 	/** bash/powershell 命令串危险特征(子串匹配,可绕——变更检测兜底) */
 	bashPatterns: RegExp[];
 	/** 变更检测基线(词法路径 + 类别;session_start 时快照全文) */
@@ -1069,15 +1094,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	}
 	bashPatterns.push(new RegExp(`(?:${[...vAlts].join("|")})`));
 
-	// ADR-0008: <agentDir>/sessions is pi's own runtime output tree (subagent
-	// artifacts live there); write/edit grade as deterministic allow. The prefix
-	// uses the ancestor-rebuild tier (rebuiltForms), matching the target-side
-	// forms: sessions/ may not exist yet on a fresh install, and an allow-grade
-	// exemption must not hinge on directory existence (baseForms alone would
-	// miss the firmlink real form and silently void the exemption).
-	const runtimeWritePrefixes = rebuiltForms(path.join(agentDir, "sessions"));
-
-	return { exact: [...exact], prefixes: [...prefixes], readPrefixes: verdictsForms, runtimeWritePrefixes, bashPatterns, watchBases };
+	return { exact: [...exact], prefixes: [...prefixes], readPrefixes: verdictsForms, bashPatterns, watchBases };
 }
 
 /** Does the resolved write path hit the protected set (realpath guards against
@@ -1108,39 +1125,28 @@ export function isProtectedReadPath(rawPath: string | undefined, cwd: string, pr
 	return false;
 }
 
-/** ADR-0008: subagent-artifacts write exemption — EVERY canonical form must sit
- *  under <agentDir>/sessions AND carry a subagent-artifacts directory segment
- *  (intersection semantics, same discipline as the in-cwd allowance): a lexical
- *  hit whose real form escapes (symlink alias) earns no exemption and falls back
- *  to the classifier. Gated to headless sessions at the call site — an
- *  interactive session keeps its ask capability. */
-const SUBAGENT_ARTIFACTS_SEG = /(^|\/)subagent-artifacts(\/|$)/;
-export function isSubagentArtifactWrite(rawPath: string, cwd: string, prot: ProtectedSet): boolean {
-	if (prot.runtimeWritePrefixes.length === 0 || !rawPath) return false;
-	const forms = rebuiltForms(path.resolve(cwd, expandHome(rawPath)));
-	const inTree = (f: string) => prot.runtimeWritePrefixes.some((p) => f === p || f.startsWith(p + path.sep));
-	return forms.every((f) => inTree(f) && SUBAGENT_ARTIFACTS_SEG.test(f));
-}
-
 /** 自保护层裁决(第 0 层,先于一切):触碰门禁自身文件 → 不可豁免的 deny;其余 null 交后续层 */
 function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd: string, prot: ProtectedSet): RuleResult | null {
 	switch (toolName) {
 		case "write":
 		case "edit":
-			if (isProtectedWritePath(String(input.path ?? ""), cwd, prot)) {
-				return { verdict: "deny", reason: `self-protection layer (ADR-0001): ${input.path} is part of the permission gate itself; agent-side modification is denied — edit it manually outside pi if intended` };
+		case "ast_edit":
+			for (const target of pathTargets(toolName, input)) {
+				if (isProtectedWritePath(target, cwd, prot)) {
+					return { verdict: "deny", reason: `self-protection layer (ADR-0001): ${target} is part of the permission gate itself; agent-side modification is denied — edit it manually outside omp if intended` };
+				}
 			}
 			return null;
 		case "read":
 		case "grep":
+		case "glob":
 		case "find":
-		case "ls":
+		case "ast_grep":
 			if (isProtectedReadPath(typeof input.path === "string" ? input.path : undefined, cwd, prot)) {
-				return { verdict: "deny", reason: `self-protection layer (#54): ${typeof input.path === "string" ? input.path : cwd} holds the gate's verdict audit records — agent reads are denied (untrusted raw model output inside); view them outside pi` };
+				return { verdict: "deny", reason: `self-protection layer (#54): ${typeof input.path === "string" ? input.path : cwd} holds the gate's verdict audit records — agent reads are denied (untrusted raw model output inside); view them outside omp` };
 			}
 			return null;
-		case "bash":
-		case "powershell": {
+		case "bash": {
 			const cmd = String(input.command ?? "");
 			if (prot.bashPatterns.some((re) => re.test(cmd))) {
 				return { verdict: "deny", reason: `self-protection layer (ADR-0001): command touches the permission gate's own files — user-editable only` };
@@ -1148,7 +1154,7 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 			return null;
 		}
 		default:
-			return null; // MCP/自定义工具不经规则层(ADR-0001:由变更检测兜底)
+			return null; // MCP/custom tools bypass the rule layer (ADR-0001: tamper detection backstops)
 	}
 }
 
@@ -1258,17 +1264,23 @@ function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: 
 	const kind = toolKind(toolName);
 	if (kind === "command") {
 		base = classifyBash(String(input.command ?? ""), user.builtinDenyFloor);
-	} else if (toolName === "write" || toolName === "edit") {
-		// isWrite grading nuance stays per-tool (not part of the family map)
-		base = classifyPath(toolName, String(input.path ?? ""), cwd, true, user.builtinDenyFloor);
+	} else if (toolName === "write" || toolName === "edit" || toolName === "ast_edit") {
+		// Write grading: every target must pass; the strictest (deny > gray > allow)
+		// wins, so a batch rewrite touching one protected path denies the whole call.
+		const targets = pathTargets(toolName, input);
+		base = targets.length === 0
+			? { verdict: "gray", reason: `write tool without a resolvable path: ${toolName}` }
+			: strictest(targets.map((p) => classifyPath(toolName, p, cwd, true, user.builtinDenyFloor)));
 	} else if (toolName === "read") {
 		// read keeps classifyPath even with an empty path: resolved to cwd, it still
 		// carries the system-directory gray grading (bit-for-bit with the old switch)
 		base = classifyPath(toolName, String(input.path ?? ""), cwd, false, user.builtinDenyFloor);
-	} else if (kind === "file") { // grep/find/ls: optional path; absent → cwd is the
+	} else if (kind === "file") { // grep/glob/find/ast_grep: optional path; absent → cwd is the
 		// effective target, so user rules and denyPaths compare against it (#48)
-		const p = typeof input.path === "string" ? input.path : undefined;
-		base = p ? classifyPath(toolName, p, cwd, false, user.builtinDenyFloor) : { verdict: "allow" };
+		const targets = pathTargets(toolName, input);
+		base = targets.length === 0
+			? { verdict: "allow" }
+			: strictest(targets.map((p) => classifyPath(toolName, p, cwd, false, user.builtinDenyFloor)));
 	} else {
 		// ignoreTools passthrough: user-declared exempt tools skip adjudication;
 		// reached only after self-protection and the deny floor, so neither can be
@@ -1325,35 +1337,27 @@ const DENY_PATHS_HINT =
 	"\n\nThe user has configured protected paths (denyPaths). Any action that reads, writes, copies, archives, or exfiltrates their contents — including indirection such as copying to a temporary location first — must be denied or asked about, never silently allowed.";
 
 // ============================================================================
-// Native classifier path (ADR-0005): pi ≥ 0.99's classify() protocol channel,
-// replacing the retired jev-adapter transport. System One (jev over any transport)
-// and llama.cpp label-probability classifiers share this path.
+// Classifier model resolution (ADR-0005, omp port): omp has no classify()
+// protocol channel — its typed-judgment API is the `judge` model role reached
+// through `resolveJudge()`, and extension code cannot construct a Judge from a
+// registry entry. The gray zone therefore runs on the chat completion path
+// (`completeSimple` with the session credential) for every spec, which is what
+// pi's chat path did as well. The confidence floor stays inert for chat layers,
+// exactly as ADR-0005 documented for non-native classifiers.
 // ============================================================================
 
 const VERDICTS = ["allow", "ask", "deny"] as const;
 type VerdictChoice = (typeof VERDICTS)[number];
 
-/** Structural shape of a classifier-typed model — what findOfType("classifier", …)
- *  returns on pi ≥ 0.99. Local and structural (not imported from pi-ai) to keep the
- *  seam fake-friendly, mirroring CompletionFn's discipline (#35). */
-export interface NativeClassifierSpec {
-	type: "classifier";
-	id: string;
-	api: string;
-	provider?: string;
-}
-
-/** The resolved classifier spec (ADR-0005): native = classify() protocol path
- *  (floor-capable by construction), chat = LLM prompt path — what spec resolution
- *  returns, before the thinking level is attached. */
+/** The resolved classifier spec. `native` = an omp judgment-kind model (the
+ *  `typesafe` / `*-decisions` / `workers-ai-systemone` APIs) answered through
+ *  pi-ai's typed-judgment client, which carries protocol-native confidence;
+ *  `chat` = an ordinary model answering the <verdict> prompt contract. */
 export type ResolvedSpec =
-	| { kind: "native"; model: NativeClassifierSpec }
+	| { kind: "native"; model: NonNullable<ExtensionContext["model"]> }
 	| { kind: "chat"; model: NonNullable<ExtensionContext["model"]> };
 
-/** A fully resolved classifier layer: the spec plus its thinking level. Native
- *  layers do not consume the level (classifier models carry no reasoning — a
- *  suffix warns once and the audit records null), but the parsed value stays on
- *  the layer; chat layers pass it through to the completion call. */
+/** A fully resolved classifier layer: the spec plus its thinking level. */
 export type ResolvedLayer = ResolvedSpec & { thinking: ThinkingLevel };
 
 export interface ClassifierAnswerShape {
@@ -1363,43 +1367,9 @@ export interface ClassifierAnswerShape {
 	confidence?: number;
 }
 
-export interface ClassifyResultShape {
-	stopReason: string;
-	errorMessage?: string;
-	answers: Record<string, ClassifierAnswerShape | undefined>;
-}
-
-/** Structural classify() seam — the native twin of CompletionFn: pi exposes it as
- *  ModelRegistry.classify with request-time auth; hosts without it resolve no
- *  native layer (fail-closed downstream, never a silent chat fallback). */
-export type ClassifyFn = (
-	model: NativeClassifierSpec,
-	context: { state: Record<string, unknown>; questions: unknown },
-	options?: { signal?: AbortSignal; timeoutMs?: number },
-) => Promise<ClassifyResultShape>;
-
-/** Session-lifetime cache keyed by registry instance (completionFor's pattern).
- *  Exported for tests only (the internal-seam surface, the standing #35 pattern). */
-export const classifyCache = new WeakMap<object, ClassifyFn | undefined>();
-export function classifyFor(registry: { classify?: unknown }): ClassifyFn | undefined {
-	if (!classifyCache.has(registry)) {
-		let fn: ClassifyFn | undefined;
-		if (typeof registry.classify === "function") {
-			const classify = registry.classify as ClassifyFn;
-			fn = (m, c, o) => classify.call(registry, m, c, o);
-		}
-		classifyCache.set(registry, fn);
-	}
-	return classifyCache.get(registry);
-}
-
-/** Criteria mirror CLASSIFIER_SYSTEM (carried over verbatim from the retired
- *  jev-adapter, ADR-0005): same three-way semantics, same evidence-not-instruction
- *  discipline, same err-on-ask default — as native classify() choice criteria. The
- *  state wraps the transcript under `transcript` (ClassifierContext.state is a JSON
- *  object); the instructions name the field. Carried-over limitation: no denyPaths
- *  criteria variant — the adapter never had one either (parity; a fix is a separate
- *  change, see CHANGELOG). */
+/** Criteria mirror CLASSIFIER_SYSTEM (ADR-0005): same three-way semantics, same
+ *  evidence-not-instruction discipline, same err-on-ask default — expressed as
+ *  typed-judgment choice criteria. `state.transcript` names the field. */
 export const VERDICT_QUESTIONS = {
 	verdict: {
 		type: "choice",
@@ -1414,11 +1384,57 @@ export const VERDICT_QUESTIONS = {
 	},
 } as const;
 
+/** Structural seam for the typed-judgment call, mirroring omp's `Judge.judge`.
+ *  Exported for tests only (the internal-seam surface, the standing #35 pattern). */
+export type JudgeFn = (
+	request: { state: Record<string, unknown>; questions: Questions },
+	options?: { signal?: AbortSignal },
+) => Promise<{ answers: Record<string, Answer | undefined>; api: string; model: string }>;
+
+/** Build a judge for a judgment-kind model. The credential goes in as omp's
+ *  rotating resolver, so auth retry and OAuth refresh stay host-owned. */
+export function bindJudge(
+	registry: { resolver?: (model: never, sessionId?: string) => unknown },
+	model: NonNullable<ExtensionContext["model"]>,
+	sessionId: string | undefined,
+): JudgeFn {
+	// Built lazily: createNativeJudge throws for a non-judgment api, and binding
+	// happens during resolution — the caller's fail-closed path owns the throw.
+	let judge: Judge | undefined;
+	return (request, options) => {
+		judge ??= createNativeJudge(model as never, {
+			apiKey: (typeof registry.resolver === "function" ? registry.resolver(model as never, sessionId) : undefined) as never,
+		});
+		return judge.judge(request as never, options as never) as never;
+	};
+}
+
+/** Session-lifetime cache keyed by model identity + registry. */
+const judgeCache = new WeakMap<object, Map<string, JudgeFn>>();
+export function judgeFor(
+	registry: object,
+	model: NonNullable<ExtensionContext["model"]>,
+	sessionId: string | undefined,
+): JudgeFn {
+	let byModel = judgeCache.get(registry);
+	if (!byModel) {
+		byModel = new Map();
+		judgeCache.set(registry, byModel);
+	}
+	const key = `${model.provider}/${model.id}`;
+	let fn = byModel.get(key);
+	if (!fn) {
+		fn = bindJudge(registry as never, model, sessionId);
+		byModel.set(key, fn);
+	}
+	return fn;
+}
+
 /** System One protocol family (TypeSafe jev over any transport) keeps the historical
  *  `jev:` reason prefix — audit corpora continuity (ADR-0005 / Q4). Both catalog apis
  *  of the family are listed: typesafe direct and the Cloudflare Workers AI transport.
  *  Other classifier APIs (llama.cpp label probabilities, …) use `classifier:`. */
-const SYSTEM_ONE_APIS = new Set(["typesafe-system-one", "cloudflare-workers-ai-system-one"]);
+const SYSTEM_ONE_APIS = new Set(["typesafe", "openrouter-decisions", "workers-ai-systemone"]);
 
 /** Confidence as the 0–100 integer the floor and audit display consume. Floors
  *  instead of rounding (0.12 parity): overstating a 49.6% as 50% would slip past a 50
@@ -1529,10 +1545,9 @@ interface ClassifierOutcome {
 	verdict: "allow" | "ask" | "deny";
 	reason: string;
 	source: "model" | "fail-closed";
-	/** Protocol-native confidence, 0–100 integer, set ONLY by the native classify() path
-	 *  (ADR-0005). Absent for chat-path outcomes — an LLM's free text carries no numeric
-	 *  confidence (its gate is ask/fail-closed only), so the floor keys on presence
-	 *  instead of parsing reasons. */
+	/** Protocol-native confidence, 0–100 integer. Absent on omp: every classifier
+	 *  layer runs the chat path, whose free text carries no numeric confidence, so the
+	 *  confidence floor stays inert (documented in ADR-0005). */
 	confidence?: number;
 	/** #54 audit material: the transcript actually sent and the last attempt's raw output (attached on both model and fail-closed outcomes); thinking is null on the native path (classifier models have no reasoning, #81 carried over) */
 	auditRaw?: { transcript: string; rawResponse: string; modelId: string; thinking: ThinkingLevel | null };
@@ -1563,11 +1578,10 @@ function temperatureRejection(
 }
 
 /**
- * Minimal structural shape of a completion call (#35). pi exposes it as
- * ModelRegistry.complete; omp 18 does not, but the pi-ai compat module exports
- * a functionally identical `complete`. Options pass through verbatim on both
- * hosts (thinkingEnabled/effort/cacheRetention included — see
- * research/thinking-param-blackhole.md for why API-native fields matter).
+ * Minimal structural shape of a completion call. The extension binds it to omp's
+ * `completeSimple` (pi-ai) with the registry's request-time credential resolver,
+ * so auth rotation, headers, and provider quirks stay host-owned. Kept structural
+ * so tests can supply a fake without a live registry.
  */
 export type CompletionFn = (
 	model: NonNullable<ExtensionContext["model"]>,
@@ -1575,44 +1589,68 @@ export type CompletionFn = (
 	options?: Record<string, unknown>,
 ) => Promise<{ content: Array<{ type: string; text: string }>; stopReason?: string; errorMessage?: string }>;
 
-type CompatLoader = () => Promise<{ complete: CompletionFn }>;
+/** The credential resolver surface the completion binding needs. */
+export interface CompletionRegistry {
+	/** omp resolves a rotating, session-sticky API key per request. */
+	resolver?: (model: NonNullable<ExtensionContext["model"]>, sessionId?: string) => unknown;
+}
 
-/**
- * Bind the host runtime's completion capability (#35): registry.complete when
- * present (pi), else the pi-ai compat module (omp 18). The literal dynamic
- * import specifier must stay inline — omp's legacy compat rewrites exactly
- * this literal to its bundled pi-ai; the ./compat subpath also exists on pi,
- * so resolution is safe on both hosts. The loader promise is cached; any
- * rejection propagates to the caller (the classifier's fail-closed path owns it).
- */
+/** Host-side completion capability: `completeSimple` plus a session id for
+ *  provider-side cache affinity. Injected in tests, bound to pi-ai in production. */
+export interface CompletionHost {
+	complete: (model: never, context: unknown, options: Record<string, unknown>) => Promise<{
+		content: Array<{ type: string; text?: string }>;
+		stopReason?: string;
+		errorMessage?: string;
+	}>;
+}
+
+/** Bind omp's completion capability: `completeSimple` from `@oh-my-pi/pi-ai` with
+ *  `apiKey: registry.resolver(model, sessionId)`. The resolver is what makes OAuth
+ *  refresh, key rotation, and provider header injection work — resolving a static
+ *  key here would bypass omp's retry/rotation policy. */
 export function bindCompletion(
-	registry: { complete?: unknown },
-	compatLoader: CompatLoader = () => import("@earendil-works/pi-ai/compat") as Promise<{ complete: CompletionFn }>,
+	registry: CompletionRegistry,
+	host: CompletionHost,
+	sessionId: string | undefined,
 ): CompletionFn {
-	if (typeof registry.complete === "function") {
-		const complete = registry.complete as CompletionFn;
-		return (m, c, o) => complete.call(registry, m, c, o);
-	}
-	let compat: Promise<{ complete: CompletionFn }> | undefined;
-	return async (m, c, o) => {
-		compat ??= compatLoader();
-		const { complete } = await compat;
-		return complete(m, c, o);
+	return async (model, context, options = {}) => {
+		const apiKey = typeof registry.resolver === "function" ? registry.resolver(model, sessionId) : undefined;
+		const response = await host.complete(model as never, context, {
+			...options,
+			...(apiKey === undefined ? {} : { apiKey }),
+			...(sessionId === undefined ? {} : { sessionId }),
+		});
+		return {
+			content: response.content
+				.filter((b): b is { type: "text"; text: string } => b.type === "text" && typeof b.text === "string")
+				.map((b) => ({ type: "text", text: b.text })),
+			stopReason: response.stopReason,
+			errorMessage: response.errorMessage,
+		};
 	};
 }
 
 // Session-lifetime cache keyed by registry instance: resolve once per registry.
 const completionCache = new WeakMap<object, CompletionFn>();
-function completionFor(registry: { complete?: unknown }, compatLoader?: CompatLoader): CompletionFn {
-	let fn = completionCache.get(registry);
+function completionFor(registry: CompletionRegistry, host: CompletionHost, sessionId: string | undefined): CompletionFn {
+	let fn = completionCache.get(registry as object);
 	if (!fn) {
-		fn = bindCompletion(registry, compatLoader);
-		completionCache.set(registry, fn);
+		fn = bindCompletion(registry, host, sessionId);
+		completionCache.set(registry as object, fn);
 	}
 	return fn;
 }
 
-/** 分类器思考级别(pi 原生词表;后缀语法对齐 pi --model provider/id:thinking) */
+/** Production completion backend: omp's `completeSimple`, which carries the host's
+ *  provider quirks, thinking-loop retries, and auth-retry policy. Imported
+ *  statically — the package is a host dependency, never installed alongside. */
+const piAiCompletionHost: CompletionHost = {
+	complete: (model, context, options) =>
+		completeSimple(model as never, context as never, options as never) as unknown as ReturnType<CompletionHost["complete"]>,
+};
+
+/** Classifier thinking level (omp Effort vocabulary; suffix syntax mirrors `omp --model provider/id:thinking`) */
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
@@ -1649,25 +1687,14 @@ async function callClassifierOnce(
 					signal: AbortSignal.any(signals),
 					maxTokens,
 					...(withTemperature ? { temperature: 0 } : {}),
-					// Thinking params go out in both hosts' native dialects (#35):
-					// pi's registry.complete consumes thinkingEnabled/effort (the
-					// API-native fields, per the blackhole findings in
-					// research/thinking-param-blackhole.md); omp's compat complete
-					// consumes reasoning/disableReasoning. Both sides ignore unknown
-					// option fields, so dual-send lets each host pick its own.
-					// pi off = explicitly disabled (verified to send
-					// thinking:{"type":"disabled"}; GLM downgrades to effort-low light
-					// thinking); suffix levels arrive via adaptive effort (minimal→low).
-					// omp off = disableReasoning (without it, an absent `reasoning`
-					// leaves the model default undefined); level vocabularies share the
-					// ThinkingLevel word list, reasoning passes through as-is.
+					// omp's SimpleStreamOptions: `disableReasoning` forces thinking off
+					// (an absent `reasoning` leaves the provider default in charge), and
+					// `reasoning` carries an Effort level. "minimal" has no omp effort,
+					// so it maps to the lowest one (low) — the same downgrade omp's own
+					// utility calls take.
 					...(thinking === "off"
-						? { thinkingEnabled: false, disableReasoning: true }
-						: {
-								thinkingEnabled: true,
-								effort: thinking === "minimal" ? ("low" as const) : thinking,
-								reasoning: thinking === "minimal" ? ("low" as const) : thinking,
-							}),
+						? { disableReasoning: true }
+						: { reasoning: thinking === "minimal" ? ("low" as const) : thinking }),
 					cacheRetention: "short",
 					sessionId: host.getSessionId(),
 				},
@@ -1691,20 +1718,13 @@ async function callClassifierOnce(
 	return first;
 }
 
-/**
- * 灰区分类:两档尝试(512 → 失败重试 1024)。
- * 重试触发:中止/出错/异常/输出违反契约(含空输出)——覆盖思考模型轻思考偶发空输出、
- * 无视 disabled 的模型、拒收思考参数报错的模型;重试是模型无关的兼容层。
- * 两档皆失败 → fail-closed deny(理由含两次诊断)。
- */
-/** Native classify() path (ADR-0005): one structured call replaces the LLM prompt
- *  round-trip. Single attempt — pi-ai's classifier transports already retry
- *  transport-level failures internally; verdict-level drift fails closed like any
- *  contract violation (the #63 decisions discipline carried over). Exported for
- *  tests only (the internal-seam surface, the standing #35 pattern). */
+/** Native typed-judgment path: one structured call instead of the prompt
+ *  round-trip. The model answers the three-way choice with probabilities and a
+ *  confidence, so the confidence floor has protocol-native material to gate on.
+ *  Exported for tests only (the internal-seam surface, the standing #35 pattern). */
 export async function classifyNative(
-	classify: ClassifyFn | undefined,
-	model: NativeClassifierSpec,
+	judge: JudgeFn | undefined,
+	model: NonNullable<ExtensionContext["model"]>,
 	host: PipelineHost,
 	actionLine: string,
 	signal: AbortSignal | undefined,
@@ -1717,31 +1737,26 @@ export async function classifyNative(
 		source: "fail-closed",
 		auditRaw: { transcript, rawResponse: "", modelId: model.id, thinking: null },
 	});
-	if (!classify) return fail(`host runtime has no native classify() support (${model.provider ?? "?"}/${model.id})`);
+	if (!judge) return fail(`no judgment backend for ${model.provider}/${model.id}`);
 	if (signal?.aborted) return fail("aborted before dispatch");
-	let result: ClassifyResultShape;
+	let result: Awaited<ReturnType<JudgeFn>>;
 	try {
-		result = await classify(model, { state: { transcript }, questions: VERDICT_QUESTIONS }, { signal, timeoutMs });
+		result = await judge({ state: { transcript }, questions: VERDICT_QUESTIONS }, { signal });
 	} catch (error) {
 		return fail(`exception: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	const answer = result.answers?.verdict;
-	if (result.stopReason !== "stop" || !answer) {
-		return fail(`stopReason=${result.stopReason}, model=${model.id}, errorMessage=${JSON.stringify(result.errorMessage ?? null)}`);
-	}
+	if (!answer) return fail(`no verdict answer (model=${result.model ?? model.id})`);
 	if (answer.type !== "choice") return fail(`malformed verdict answer (type=${JSON.stringify(answer.type)})`);
 	try {
-		const line = composeVerdictLine(answer, model.api);
+		const line = composeVerdictLine(answer, result.api);
 		const verdict = String(answer.choice).trim().toLowerCase() as ClassifierOutcome["verdict"];
 		return {
 			verdict,
 			reason: line,
 			source: "model",
-			confidence: confidencePercent(answer.confidence as number),
-			// The audit keeps the full contract line (tag included) in rawResponse — "what
-			// the protocol said" — mirroring the LLM path's rawResponse (the model's full
-			// output, tag included). The reason field is human-facing and tag-free.
-			auditRaw: { transcript, rawResponse: `<verdict>${verdict}</verdict> ${line}`, modelId: model.id, thinking: null },
+			confidence: confidencePercent(answer.confidence),
+			auditRaw: { transcript, rawResponse: `<verdict>${verdict}</verdict> ${line}`, modelId: result.model ?? model.id, thinking: null },
 		};
 	} catch (error) {
 		return fail(`${error instanceof Error ? error.message : String(error)}`);
@@ -1749,12 +1764,14 @@ export async function classifyNative(
 }
 
 async function classifyWithModel(
-	env: Pick<AdjudicateEnv, "host" | "signal" | "complete" | "classify">,
+	env: Pick<AdjudicateEnv, "host" | "signal" | "complete" | "getJudge">,
 	resolved: ResolvedLayer,
 	call: { actionLine: string; denyPathsActive: boolean; timeoutMs?: number },
 ): Promise<ClassifierOutcome> {
 	const timeoutMs = call.timeoutMs ?? CLASSIFIER_TIMEOUT_MS;
-	if (resolved.kind === "native") return classifyNative(env.classify, resolved.model, env.host, call.actionLine, env.signal, timeoutMs);
+	if (resolved.kind === "native") {
+		return classifyNative(env.getJudge?.(resolved.model), resolved.model, env.host, call.actionLine, env.signal, timeoutMs);
+	}
 	const chat = resolved.model;
 	const thinking = resolved.thinking;
 	const transcript = buildTranscript(env.host, call.actionLine);
@@ -1876,14 +1893,8 @@ export interface AuditRecord {
 	userAnswer?: "allowed" | "declined";
 	/** #62: ISO timestamp of the confirm resolution; `ts` stays adjudication time. */
 	answeredAt?: string;
-	/** #90: the call's id — `<parent id>/<n>` for nested calls (codemode scripts).
- *  Direct-call records carry it too; pre-0.14 corpora simply lack the field. */
+	/** The tool call's id (omp's `tool_call` event carries it). */
 	toolCallId?: string;
-	/** #90: set iff another tool (a codemode script) issued this call — the audit
-	 *  attribution that makes nested calls distinguishable from direct ones. */
-	parentToolCallId?: string;
-	/** #90: the nested-call policy in effect for a rules-only passthrough record. */
-	policy?: "rules-only";
 	/** #62: protected-path records only — the matched path. */
 	detail?: string;
 	/** #67: the confidence floor fired — the first-layer verdict was demoted. */
@@ -2146,9 +2157,8 @@ export interface AdjudicateEnv {
 	hasUI: boolean;
 	getModel: () => ResolvedLayer | null;
 	complete: CompletionFn;
-	/** Native classify() seam (ADR-0005); absent on hosts without the capability —
-	 *  the native path fail-closes, never silently falls back to the chat path. */
-	classify?: ClassifyFn;
+	/** Native typed-judgment seam (judgment-kind models); absent → no native layer. */
+	getJudge?: (model: NonNullable<ExtensionContext["model"]>) => JudgeFn;
 	host: PipelineHost;
 	signal?: AbortSignal;
 	getFallbackModel?: () => ResolvedLayer | null;
@@ -2159,11 +2169,10 @@ export interface AdjudicateEnv {
 	getAdjudicator?: () => { model: AdjudicatorModel; role: string } | null;
 }
 
-/** #67 (0.13, ADR-0005): the floor gates on protocol-native confidence — set only
- *  by the native classify() path, by construction rather than by parsing reason text.
- *  The 0.12 criterion (decisions-protocol model identity AND a parseable jev segment)
- *  is superseded: a chat-path outcome carries no confidence at all, so an LLM whose
- *  free-text reason happens to match the historical shape cannot demote. */
+/** #67 (0.13, ADR-0005): the floor gates on protocol-native confidence. On omp
+ *  every layer is a chat model, whose outcome carries no confidence at all, so this
+ *  returns null and the floor is inert — a free-text reason that happens to match a
+ *  historical jev shape cannot demote a verdict. */
 function confidenceDemotion(outcome: ClassifierOutcome, rules: UserRules): { confidence: number } | null {
 	if (rules.classifierMinConfidence === null || outcome.source === "fail-closed" || outcome.confidence === undefined) return null;
 	if (outcome.confidence < rules.classifierMinConfidence) return { confidence: outcome.confidence };
@@ -2255,60 +2264,54 @@ function shellKindFor(toolName: string): ShellKind | null {
 
 type AuditRecordBuilder = (v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">, raw: ClassifierOutcome["auditRaw"] | null) => AuditRecord;
 
-/** The role-registry surface Tier 2 reads. OMP exposes `getModelForRole`; pi
- *  1.0.0 does not, in which case the session model is the documented fallback. */
+/** The model-query surface Tier 2 reads. omp's `ctx.models.resolve` accepts a
+ *  role alias (`@adjudicator`, `@smol`, any configured role) and `provider/id`,
+ *  applying the same settings-backed match preferences as `--model`. */
 export interface RoleRegistry {
-	getModelForRole?: (role: string) => unknown;
-	find?: (provider: string, id: string) => unknown;
+	resolve?: (spec: string) => unknown;
 	hasConfiguredAuth?: (model: unknown) => boolean;
 }
 
 /**
  * Resolve a model for the adjudicator role: the configured role → `smol` → the
- * session model. Classifier-typed entries are skipped (Tier 2 needs a generative
- * JSON answer); entries without configured auth are skipped. A role value may be a
- * model object, a `{ model }` wrapper, or a `provider/id` string.
- *
- * Lives in the extension (not the tiered module) on purpose: role resolution is
- * host adaptation, and keeping it here lets a bare single-file install load and
- * fall back to the legacy classifier instead of failing at import time.
+ * session model. Non-chat entries are skipped (Tier 2 needs a generative JSON
+ * answer); entries without configured auth are skipped.
  */
 export function resolveAdjudicatorModel(
-	registry: RoleRegistry | undefined,
+	models: RoleRegistry | undefined,
 	sessionModel: AdjudicatorModel | null | undefined,
 	role: string,
 ): { model: AdjudicatorModel; role: string } | null {
 	const normalize = (candidate: unknown): AdjudicatorModel | null => {
-		if (!candidate) return null;
-		if (typeof candidate === "string") {
-			const slash = candidate.indexOf("/");
-			if (slash <= 0 || !registry?.find) return null;
-			return normalize(registry.find(candidate.slice(0, slash), candidate.slice(slash + 1)));
-		}
-		if (typeof candidate !== "object") return null;
+		if (!candidate || typeof candidate !== "object") return null;
 		const obj = candidate as Record<string, unknown>;
 		const inner = obj.model && typeof obj.model === "object" ? (obj.model as Record<string, unknown>) : obj;
 		if (typeof inner.id !== "string" || !inner.id) return null;
 		return inner as AdjudicatorModel;
 	};
 	const usable = (model: AdjudicatorModel | null): model is AdjudicatorModel => {
-		if (!model || model.type === "classifier") return false;
-		if (registry?.hasConfiguredAuth) {
+		if (!model || model.type === "classifier" || model.kind === "judge") return false;
+		if (models?.hasConfiguredAuth) {
 			try {
-				return registry.hasConfiguredAuth(model);
+				return models.hasConfiguredAuth(model);
 			} catch {
 				return false;
 			}
 		}
 		return true;
 	};
-	for (const name of [role, "smol"]) {
-		if (!registry?.getModelForRole) break;
-		try {
-			const model = normalize(registry.getModelForRole(name));
-			if (usable(model)) return { model, role: name };
-		} catch {
-			// A broken role lookup falls through to the next role, then the session model.
+	if (models?.resolve) {
+		// Role aliases are omp's canonical selector form; a bare role name also
+		// works for configured custom roles, so try both spellings.
+		for (const name of [role, "smol"]) {
+			for (const spec of name.startsWith("@") ? [name] : [`@${name}`, name]) {
+				try {
+					const model = normalize(models.resolve(spec));
+					if (usable(model)) return { model, role: name };
+				} catch {
+					// A broken alias falls through to the next candidate.
+				}
+			}
 		}
 	}
 	const session = normalize(sessionModel);
@@ -2339,7 +2342,7 @@ function loadTieredRuntime(): Promise<typeof import("../src/classifiers/tiered")
  */
 async function adjudicateTiered(
 	state: SessionState,
-	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string; parentToolCallId?: string },
+	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string },
 	env: AdjudicateEnv,
 	actionLine: string,
 	buildRecord: AuditRecordBuilder,
@@ -2412,7 +2415,7 @@ async function adjudicateTiered(
 
 
 /**
- * The pre-ADR-0009 gray-zone path: one classifier layer (native classify() or a
+ * The pre-ADR-0009 gray-zone path: one classifier layer (a
  * chat completion) plus the #63/#67 confidence cascade. Kept intact for two
  * reasons: configurations without a `semanticAdjudication` block must behave
  * byte-identically, and a single-file install that cannot load the tiered runtime
@@ -2421,7 +2424,7 @@ async function adjudicateTiered(
  */
 async function adjudicateLegacy(
 	state: SessionState,
-	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string; parentToolCallId?: string },
+	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string },
 	env: AdjudicateEnv,
 	actionLine: string,
 	buildRecord: AuditRecordBuilder,
@@ -2503,21 +2506,12 @@ async function adjudicateLegacy(
  */
 export async function adjudicate(
 	state: SessionState,
-	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string; parentToolCallId?: string },
+	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string },
 	env: AdjudicateEnv,
 ): Promise<Verdict> {
 	const rule = classifyByRules(call.toolName, call.input, env.cwd, state.userRules, state.prot, state.anchoredDenyPathBases(env.cwd));
 	if (rule.verdict === "allow") return { verdict: "allow", reason: rule.reason ?? "", source: "rule", degraded: false };
 	if (rule.verdict === "deny") return { verdict: "deny", reason: rule.reason ?? "", source: "rule", degraded: false };
-	// ADR-0008: subagent artifacts — a headless (no-UI) session writing pi's own
-	// runtime artifact tree passes deterministically; user deny and denyPaths have
-	// already ruled above (declarations beat the built-in exemption), and only the
-	// gray grade is lifted. An interactive session keeps its ask capability, so the
-	// exemption stays headless-only. Read and bash are deliberately NOT exempt.
-	if (rule.verdict === "gray" && !env.hasUI && (call.toolName === "write" || call.toolName === "edit") && isSubagentArtifactWrite(String(call.input.path ?? ""), env.cwd, state.prot)) {
-		return { verdict: "allow", reason: "subagent artifacts (headless) — deterministic write exemption (ADR-0008)", source: "rule", degraded: false };
-	}
-
 	// #62: the audit surface widens to protected-path asks (their user answers grade the
 	// denyPaths rules); rule allow/deny stay unaudited (no corpus value, #54). Record
 	// building is split from appending: an interactive ask returns via pendingAudit and the
@@ -2536,10 +2530,7 @@ export async function adjudicate(
 		thinking: raw?.thinking ?? null,
 		transcript: raw?.transcript ?? null,
 		rawResponse: raw?.rawResponse ?? null,
-		// #90 audit attribution: ids ride on every record; nested records additionally
-		// carry the parent linkage, making them distinguishable from direct calls
 		...(call.toolCallId !== undefined ? { toolCallId: call.toolCallId } : {}),
-		...(call.parentToolCallId !== undefined ? { parentToolCallId: call.parentToolCallId } : {}),
 		...v,
 	});
 
@@ -2552,17 +2543,6 @@ export async function adjudicate(
 		// headless: the ask degrades to deny — recorded like the gray-zone rule (the effective post-degradation verdict is what lands in the record)
 		state.audit?.append({ ...buildRecord({ verdict: "deny", reason: rule.reason ?? "", source: "protected-path", degraded: true }, null), detail: rule.detail });
 		return { verdict: "deny", reason: rule.reason ?? "", detail: rule.detail, source: "protected-path", degraded: true };
-	}
-
-	// ADR-0006 (#90): the layered-exemption policy. Nested calls under rules-only have
-	// already passed every deterministic layer above (self-protection, floor, user
-	// rules, denyPaths + its ask) — only the intelligence layer is skipped: the gray
-	// zone passes. Audited when audit is on (source rule + policy marker): the user
-	// needs corpus data on what the opt-in actually let through.
-	if (call.parentToolCallId !== undefined && state.userRules.codemodeNestedCalls === "rules-only") {
-		const reason = "codemodeNestedCalls rules-only: gray-zone passthrough (nested call — deterministic layers only)";
-		state.audit?.append({ ...buildRecord({ verdict: "allow", reason, source: "rule", degraded: false }, null), policy: "rules-only" });
-		return { verdict: "allow", reason, source: "rule", degraded: false };
 	}
 
 	// ADR-0009: tiered semantic adjudication. The block's presence is the switch;
@@ -2590,12 +2570,15 @@ function blockedReason(tag: string, detail: string): string {
 
 /** Optional dependency injection for tests (#35): fake the compat fallback loader. */
 export interface AutoModeDeps {
-	compatLoader?: CompatLoader;
+	/** Completion backend override (tests). Production binds omp's `completeSimple`. */
+	completionHost?: CompletionHost;
+	/** Judgment backend override (tests). Production binds pi-ai's `createNativeJudge`. */
+	getJudge?: (model: NonNullable<ExtensionContext["model"]>) => JudgeFn;
 }
 
 export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	pi.registerFlag("auto-mode", { description: "Enable Auto Mode (rules + model classifier gating for tool calls)", type: "boolean", default: true });
-	pi.registerFlag("auto-mode-model", { description: "Classifier model as provider/id[:thinking] (pi --model syntax; default: inherit session model)", type: "string" });
+	pi.registerFlag("auto-mode-model", { description: "Classifier model as provider/id[:thinking] or @role (omp --model syntax; default: inherit session model)", type: "string" });
 	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows", type: "boolean", default: false });
 
 	let enabled = pi.getFlag("auto-mode") !== false;
@@ -2709,8 +2692,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	const toggleHint = () => (registeredToggleKey ? ` · toggle: ${registeredToggleKey}` : "");
 	/** Status line denyPaths count (ADR-0002): shown only when configured */
 	const denyPathsHint = () => (state.userRules.denyPaths.length > 0 ? `\ndenyPaths: ${state.userRules.denyPaths.length} active` : "");
-	/** #90: nested-call policy hint — shown only when the exemption is active */
-	const nestedPolicyHint = () => (state.userRules.codemodeNestedCalls === "rules-only" ? "\nnested calls: rules-only (deterministic layers only — the gray zone passes)" : "");
 	/** Status line audit hint (#54): shown only while the sink is active */
 	const auditHint = () => (state.audit ? `\naudit: on → ${state.audit.dir}` : "");
 	/** ADR-0009: tiered adjudication status line — shown only when the block is configured */
@@ -2735,7 +2716,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const arg = args.trim().toLowerCase();
 			// 裸调用:只读状态展示,无副作用
 			if (arg === "") {
-				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}\n${denyPathsHint()}${nestedPolicyHint()}${auditHint()}${fallbackHint()}${tieredHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
+				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}\n${denyPathsHint()}${auditHint()}${fallbackHint()}${tieredHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
 			return;
 			}
 			// 幂等设定:与现值相同不翻转,仅确认
@@ -2755,10 +2736,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	});
 
 	let warnedClassifierModel = false;
-	let warnedFloorInert = false;
-	/** #81: per-layer one-shot for the jev thinking-suffix warning */
-	const classifierSuffixWarned = { classifier: false, fallback: false };
-	/** 思考级别集(pi 原生 EXTENDED_THINKING_LEVELS;后缀语法对齐 pi --model provider/id:thinking) */
+	let warnedNativeSuffix = false;
+	/** 思考级别集(omp Effort levels; the suffix syntax mirrors `omp --model provider/id:thinking`) */
 	const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 	/** Parse "provider/id:thinking" → { specPart, level }. An invalid suffix is ignored and
@@ -2774,11 +2753,12 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return { specPart: raw, level: null };
 	}
 
-	/** ADR-0005: jev-specialized unavailable wording — the real causes on the native
-	 *  path: the host must offer native classifier support (pi ≥ 0.99) and a credential
-	 *  for one of the transports. */
+	/** jev-specialized unavailable wording. A judge-kind entry (`typesafe/jev-latest`
+	 *  and friends) answers typed judgments only and is not a chat model, so the
+	 *  classifier cannot use it directly on omp: the gray zone needs a chat model.
+	 *  Point `classifierModel` at a chat model (or leave it null for self-reflection). */
 	const JEV_UNAVAILABLE_HINT =
-		"jev needs a pi ≥ 0.99 host (native classifier support) and a credential: TYPESAFE_API_KEY (typesafe direct), or the provider's login/API key for the catalog transports (openrouter, opencode, cloudflare-workers-ai, vercel-ai-gateway)";
+		"jev entries are judge-kind models and cannot serve the chat classifier path; use a chat model (provider/id or @role) instead — judge models remain available to omp's own judgment features";
 
 	/** True when the spec's model id names a jev model on any native transport — keys
 	 *  the unavailable wording above. Legitimate ids across transports: jev-latest,
@@ -2800,47 +2780,24 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			: `pi-verdict: ${subject} "${raw}" unavailable (not found or no configured auth)${tail}`;
 	}
 
-	/** ADR-0005: shared spec→model resolution for both classifier layers. Native
-	 *  classifier entries are looked up first (findOfType) and WIN on same-id dual
-	 *  listings (llama.cpp chat+classifier share ids) — the native path is the point
-	 *  of the migration; chat lookup remains for LLM specs. Plus the classifier
-	 *  thinking-suffix warning fired only on the resolved native path (classifier
-	 *  models have no reasoning, so "ignored" is factually true exactly here; on the
-	 *  chat path the suffix stays effective and must not be called ignored). Returns
-	 *  null when the spec does not resolve; the layer's fallback semantics stay with
-	 *  the caller. */
-	function findSpecModel(ctx: ExtensionContext, specPart: string, level: string | null, layer: "classifier" | "fallback"): ResolvedSpec | null {
-		const slash = specPart.indexOf("/");
-		if (slash <= 0) return null;
-		const provider = specPart.slice(0, slash);
-		const id = specPart.slice(slash + 1);
-		const findOfType = (ctx.modelRegistry as { findOfType?: (type: "classifier", provider: string, id: string) => NativeClassifierSpec | undefined }).findOfType;
-		if (typeof findOfType === "function") {
-			const native = findOfType.call(ctx.modelRegistry, "classifier", provider, id);
-			const hasAuth = ctx.modelRegistry.hasConfiguredAuth as (model: unknown) => boolean;
-			if (native && native.type === "classifier" && hasAuth.call(ctx.modelRegistry, native)) {
-				if (level !== null && !classifierSuffixWarned[layer]) {
-					classifierSuffixWarned[layer] = true;
-					ctx.ui.notify(`pi-verdict: thinking suffix "${level}" has no effect on a classifier model (${specPart} has no reasoning to configure) — ignored`, "warning");
-				}
-				return { kind: "native", model: native };
-			}
+	/** Shared spec→model resolution for both classifier layers, through omp's
+	 *  `ctx.models` facade: it accepts `provider/id`, a bare id, or a role alias
+	 *  (`@smol`, `@slow`, any configured role) and applies the same settings-backed
+	 *  match preferences as `--model`. Returns null when nothing matches or the
+	 *  entry has no configured auth; the layer's fallback semantics stay with the
+	 *  caller. */
+	function findSpecModel(ctx: ExtensionContext, specPart: string): ResolvedSpec | null {
+		let model: NonNullable<ExtensionContext["model"]> | undefined;
+		try {
+			model = ctx.models.resolve(specPart);
+		} catch {
+			return null;
 		}
-		const chat = ctx.modelRegistry.find(provider, id);
-		if (!chat || !ctx.modelRegistry.hasConfiguredAuth(chat)) return null;
-		return { kind: "chat", model: chat };
-	}
-
-	/** #81 (0.13, ADR-0005): floor-inert — the confidence floor binds to native
-	 *  classifier models (protocol-native confidence), so a chat-model classifier
-	 *  silently ignores it. Surfaces once per session at the first resolution (explicit
-	 *  model and self-reflection fallback alike; a purely rule-adjudicated session never
-	 *  sees it — lazy via getModel). Neutral wording: the fact, never a judgment on the
-	 *  config (users may pre-set the floor for a future classifier switch). */
-	function warnFloorInert(ctx: ExtensionContext, model: ResolvedSpec): void {
-		if (warnedFloorInert || state.userRules.classifierMinConfidence === null || model.kind === "native") return;
-		warnedFloorInert = true;
-		ctx.ui.notify("pi-verdict: classifierMinConfidence has no effect on a chat-model classifier (the floor applies to native classifier models like typesafe/jev-latest, whose confidence is protocol-native)", "warning");
+		if (!model) return null;
+		if (!ctx.modelRegistry.hasConfiguredAuth(model)) return null;
+		// Judgment-kind models (jev and friends) answer typed questions natively;
+		// everything else runs the chat prompt contract.
+		return { kind: isJudgmentApi(model.api) ? "native" : "chat", model };
 	}
 
 	/** 解析分类器模型与思考级别:CLI flag > 环境变量 > 配置文件(classifierModel) >
@@ -2858,10 +2815,13 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				ctx.ui.notify(msg, "warning");
 			});
 			thinking = (level ?? "off") as ThinkingLevel;
-			const spec = findSpecModel(ctx, specPart, level, "classifier");
+			const spec = findSpecModel(ctx, specPart);
 			if (spec) {
-				warnFloorInert(ctx, spec);
-				return { ...spec, thinking };
+				if (spec.kind === "native" && level !== null && !warnedNativeSuffix) {
+					warnedNativeSuffix = true;
+					ctx.ui.notify(`pi-verdict: thinking suffix "${level}" has no effect on a judgment model (${specPart} has no reasoning to configure) — ignored`, "warning");
+				}
+				return { ...spec, thinking: spec.kind === "native" ? "off" : thinking };
 			}
 			if (!warnedClassifierModel) {
 				warnedClassifierModel = true; // 每会话仅警告一次,避免逐调用刷屏
@@ -2875,7 +2835,6 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// chat/virtual);显式指定的思考级别在回退时仍生效(原语义)
 		if (ctx.model) {
 			const self: ResolvedSpec = { kind: "chat", model: ctx.model };
-			warnFloorInert(ctx, self);
 			return { ...self, thinking };
 		}
 		return null;
@@ -2897,8 +2856,14 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			ctx.ui.notify(msg, "warning");
 		});
 		const thinking = (level ?? "off") as ThinkingLevel;
-		const spec = findSpecModel(ctx, specPart, level, "fallback");
-		if (spec) return { ...spec, thinking };
+		const spec = findSpecModel(ctx, specPart);
+		if (spec) {
+			if (spec.kind === "native" && level !== null && !warnedNativeSuffix) {
+				warnedNativeSuffix = true;
+				ctx.ui.notify(`pi-verdict: thinking suffix "${level}" has no effect on a judgment model (${specPart} has no reasoning to configure) — ignored`, "warning");
+			}
+			return { ...spec, thinking: spec.kind === "native" ? "off" : thinking };
+		}
 		if (!warnedFallbackModel) {
 			warnedFallbackModel = true; // one warning per session
 			ctx.ui.notify(
@@ -2952,8 +2917,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	function resolveAdjudicator(ctx: ExtensionContext): { model: AdjudicatorModel; role: string } | null {
 		const config = state.userRules.semanticAdjudication;
 		if (!config) return null;
-		const registry = ctx.modelRegistry as unknown as RoleRegistry;
-		const resolved = resolveAdjudicatorModel(registry, ctx.model as AdjudicatorModel | undefined, config.tier2Role);
+		const models: RoleRegistry = {
+			resolve: (spec) => ctx.models.resolve(spec),
+			hasConfiguredAuth: (model) => ctx.modelRegistry.hasConfiguredAuth(model as never),
+		};
+		const resolved = resolveAdjudicatorModel(models, ctx.model as AdjudicatorModel | undefined, config.tier2Role);
 		if (!resolved && !warnedAdjudicator) {
 			warnedAdjudicator = true;
 			ctx.ui.notify(
@@ -3005,14 +2973,13 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		}
 
 		// 判定管线(零 UI)→ 呈现(source 模板)
-		const verdict = await adjudicate(state, { toolName: event.toolName, input, toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId }, {
+		const verdict = await adjudicate(state, { toolName: event.toolName, input, toolCallId: event.toolCallId }, {
 			cwd: ctx.cwd,
 			hasUI: !!ctx.hasUI,
 			getModel: () => resolveClassifier(ctx),
-			complete: completionFor(ctx.modelRegistry, deps.compatLoader),
-			classify: classifyFor(ctx.modelRegistry),
+			complete: completionFor(ctx.modelRegistry, deps.completionHost ?? piAiCompletionHost, ctx.sessionManager.getSessionId()),
+			getJudge: (model) => (deps.getJudge ?? ((m) => judgeFor(ctx.modelRegistry, m, ctx.sessionManager.getSessionId())))(model),
 			host: ctx.sessionManager,
-			signal: ctx.signal,
 			getFallbackModel: () => resolveFallbackClassifier(ctx),
 			// ADR-0009: lazily resolved only when the tiered block is active and the
 			// call actually needs the tier (Tier 1 load / Tier 2 escalation).

@@ -33,10 +33,11 @@ interface Harness {
 	confirmAnswer: boolean;
 	confirmError: unknown;
 	findMap: Record<string, any> | undefined;
-	/** ADR-0005: native-classifier seam — findOfType lookup map and classify call log */
-	classifyCalls: any[];
-	ofTypeMap: Record<string, any> | undefined;
-	install: (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; compatLoader?: () => Promise<{ complete: any }> }) => void;
+	/** Model lookup map for ctx.models.resolve (`provider/id` or `@role`). */
+	resolveMap: Record<string, any> | undefined;
+	/** Native judgment calls (model-agnostic; the harness serves every judge). */
+	judgeCalls: any[];
+	install: (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; completionHost?: { complete: any } }) => void;
 }
 
 /** Parse a jev-format reason line back into a native classify() answer — the shared
@@ -53,19 +54,18 @@ function jevAnswer(text: string): any {
 	return { type: "choice", choice: m[1], probabilities, confidence: Number(m[3]) / 100 };
 }
 
-/** ADR-0005: the native jev layer — resolves the classifier spec (env channel:
- *  session() predates the flag) through findOfType and serves answers from the
- *  shared h.responses queue via the classify seam. The env channel overrides the
- *  config's classifierModel, so suffixed specs must pass the SAME spec here.
- *  0.12's jevLayer made the session model a decisions model; on 0.13 the native
- *  layer comes from an explicit spec. beforeEach in each native-using describe
- *  deletes the env (no cross-test leakage). */
+/** ADR-0005 (omp port): the native judgment layer. A judgment-kind model
+ *  (`api: "typesafe"` and friends) resolves through ctx.models and answers the
+ *  typed questions from the shared h.responses queue — jev-format lines are parsed
+ *  back into structured choice answers. The env channel overrides the config's
+ *  classifierModel, so suffixed specs pass the SAME spec here. beforeEach in each
+ *  native-using describe deletes the env (no cross-test leakage). */
 const jevLayer = (h: Harness, spec: string = "typesafe/jev-latest"): void => {
 	process.env.PI_AUTO_MODE_MODEL = spec;
-	h.ofTypeMap = { "typesafe/jev-latest": { type: "classifier", id: "jev-latest", api: "typesafe-system-one", provider: "typesafe" } };
+	h.resolveMap = { ...h.resolveMap, "typesafe/jev-latest": { id: "jev-latest", api: "typesafe", provider: "typesafe" } };
 };
 
-function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): Harness {
+function makeHarness(cwd: string = "/proj"): Harness {
 	const handlers: Record<string, any> = {};
 	const commands: Record<string, any> = {};
 	const shortcuts: Record<string, any> = {};
@@ -74,37 +74,50 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 	const fgCalls: Array<[string, string]> = [];
 	let flags: Record<string, unknown> = {};
 	const branch: any[] = [];
-	const h: any = { handlers, commands, shortcuts, notifies, statusSets, fgCalls, branch, calls: [], responses: [], confirms: 0, confirmMsgs: [] as string[], confirmAnswer: true, confirmError: undefined, selects: 0, selectIndex: 0, findMap: undefined, classifyCalls: [], ofTypeMap: undefined };
+	const h: any = { handlers, commands, shortcuts, notifies, statusSets, fgCalls, branch, calls: [], responses: [], confirms: 0, confirmMsgs: [] as string[], confirmAnswer: true, confirmError: undefined, selects: 0, selectIndex: 0, findMap: undefined, resolveMap: undefined, judgeCalls: [] };
 	// ADR-0005: the native classify() path and the chat complete path share one response
 	// cursor — h.responses feeds both seams in call order (classify parses jev-format
 	// lines back into structured answers, see jevAnswer).
 	const cursor = { i: 0 };
 	const nextResp = () => h.responses[Math.min(cursor.i++, h.responses.length - 1)];
 
+	// omp shape: the registry carries model lookup + auth, while completion is a
+	// host capability (completeSimple) bound by the extension.
+	// Default completion host: serves h.responses in order and records the call.
+	const defaultCompletionHost = {
+		complete: async (_m: any, _req: any, opts: any) => {
+			h.calls.push({ model: _m?.id, maxTokens: opts?.maxTokens, temperature: opts?.temperature, reasoning: opts?.reasoning, disableReasoning: opts?.disableReasoning, systemPrompt: _req?.systemPrompt ?? null, messages: _req?.messages ?? [] });
+			const r = nextResp();
+			if (r instanceof Error) throw r;
+			return { content: [{ type: "text", text: r.text }], stopReason: r.stopReason ?? "stop" };
+		},
+	};
+	// Native judgment seam: the same response queue, parsed as jev-format answers.
+	const judgeForHarness = (_model: any) => async (request: any) => {
+		h.judgeCalls.push({ state: request?.state, questions: request?.questions });
+		const r = nextResp();
+		if (r instanceof Error) throw r;
+		return { api: "typesafe", model: "jev-latest", answers: { verdict: jevAnswer(r.text) } };
+	};
+
 	const ctx: any = {
-		cwd, hasUI: true, signal: undefined, model: { id: "mock/glm" },
+		cwd, hasUI: true, model: { id: "mock/glm", provider: "mock", api: "openai-completions" },
 		sessionManager: { getBranch: () => branch, getSessionId: () => "s1" },
 		modelRegistry: {
-			// omp 18 shape (#35): no `complete` on the registry — the extension must
-			// resolve completion through the compat fallback instead
-			...(opts?.ompRegistry ? {} : {
-				complete: async (_m: any, _req: any, opts: any) => {
-					h.calls.push({ model: _m?.id, maxTokens: opts.maxTokens, temperature: opts.temperature, thinkingEnabled: opts.thinkingEnabled, effort: opts.effort, systemPrompt: _req?.systemPrompt ?? null, messages: _req?.messages ?? [] });
-					const r = nextResp();
-					if (r instanceof Error) throw r;
-					return { content: [{ type: "text", text: r.text }], stopReason: r.stopReason ?? "stop" };
-				},
-			}),
+			resolver: (m: any, sid?: string) => ({ apiKey: "test-key", sessionId: sid, model: m?.id }),
 			find: (p: string, id: string) => h.findMap?.[`${p}/${id}`] ?? null,
-			findOfType: (type: string, p: string, id: string) => h.ofTypeMap?.[`${p}/${id}`] ?? undefined,
-			// ADR-0005: the native seam — records the call, serves from the shared queue
-			classify: async (m: any, c: any, o: any) => {
-				h.classifyCalls.push({ model: m?.id, state: c?.state, questions: c?.questions, options: o });
-				const r = nextResp();
-				if (r instanceof Error) throw r;
-				return { stopReason: "stop", answers: { verdict: jevAnswer(r.text) } };
-			},
 			hasConfiguredAuth: () => true,
+		},
+		models: {
+			// omp's ctx.models facade: resolve provider/id, bare id, or @role.
+			resolve: (spec: string) => {
+				const hit = h.resolveMap?.[spec] ?? h.findMap?.[spec.replace(/^@/, "")];
+				if (!hit) return null;
+				return { provider: "mock", api: "openai-completions", ...hit };
+			},
+			current: () => ctx.model,
+			list: () => Object.values(h.findMap ?? {}),
+			family: () => "mock",
 		},
 		ui: {
 			notify: (msg: string, level: string) => notifies.push([msg, level]),
@@ -120,7 +133,7 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 	};
 	h.ctx = ctx;
 
-	h.install = (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; compatLoader?: () => Promise<{ complete: any }> }) => {
+	h.install = (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; completionHost?: { complete: any } }) => {
 		flags = { "auto-mode": opts?.flag ?? true, "auto-mode-debug": opts?.debug ?? false, ...(opts?.modelFlag ? { "auto-mode-model": opts.modelFlag } : {}) };
 		const prev = process.env.PI_AUTO_MODE_DEBUG;
 		if (opts?.debug) process.env.PI_AUTO_MODE_DEBUG = "1"; else delete process.env.PI_AUTO_MODE_DEBUG;
@@ -130,7 +143,7 @@ function makeHarness(cwd: string = "/proj", opts?: { ompRegistry?: boolean }): H
 			on: (e: string, fn: any) => { handlers[e] = fn; },
 			registerCommand: (n: string, c: any) => { commands[n] = c; },
 			registerShortcut: (k: string, o: any) => { shortcuts[k] = o; },
-		} as any, opts?.compatLoader ? { compatLoader: opts.compatLoader } : {});
+		} as any, { completionHost: opts?.completionHost ?? defaultCompletionHost, getJudge: judgeForHarness });
 		if (prev !== undefined) process.env.PI_AUTO_MODE_DEBUG = prev; else delete process.env.PI_AUTO_MODE_DEBUG;
 	};
 	return h as Harness;
@@ -148,7 +161,7 @@ const SYNTH_SK = "sk-lf-c7b2be14-f87f-4497-9c86-73713134867c";
 beforeAll(() => { process.env.PI_CODING_AGENT_DIR = TMP_AGENT; });
 afterAll(() => { delete process.env.PI_CODING_AGENT_DIR; });
 
-function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown[]; ignoreTools?: unknown[]; builtinDenyFloor?: boolean; classifierModel?: string | null; toggleShortcut?: string | null; audit?: boolean; auditRedactSecrets?: unknown; notifyAllows?: boolean; classifierFallbackModel?: string | null; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; codemodeNestedCalls?: unknown }, invalid?: string[]): void {
+function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown[]; ignoreTools?: unknown[]; builtinDenyFloor?: boolean; classifierModel?: string | null; toggleShortcut?: string | null; audit?: boolean; auditRedactSecrets?: unknown; notifyAllows?: boolean; classifierFallbackModel?: string | null; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown }, invalid?: string[]): void {
 	config = { allow: cfg.allow ?? [], deny: cfg.deny ?? [] };
 	const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
 	fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -163,7 +176,6 @@ function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown
 	if (cfg.classifierFallbackConfidence !== undefined) raw.classifierFallbackConfidence = cfg.classifierFallbackConfidence;
 	if (cfg.classifierMinConfidence !== undefined) raw.classifierMinConfidence = cfg.classifierMinConfidence;
 	if (cfg.classifierFallbackMode !== undefined) raw.classifierFallbackMode = cfg.classifierFallbackMode;
-	if (cfg.codemodeNestedCalls !== undefined) raw.codemodeNestedCalls = cfg.codemodeNestedCalls;
 	// denyPaths (ADR-0002): unknown[] lets negative tests mix in non-string entries
 	if (cfg.denyPaths !== undefined) raw.denyPaths = cfg.denyPaths;
 	// ignoreTools: unknown[] lets negative tests mix in non-string entries
@@ -176,19 +188,13 @@ function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown
 const userMsg = (h: Harness, t: string) => h.branch.push({ type: "message", message: { role: "user", content: t } });
 const toolCall = (h: Harness, toolName: string, input: any) => h.handlers.tool_call({ toolName, input }, h.ctx);
 
-/** The pi ≥ 0.99 nested-call event shape: parentToolCallId set, toolCallId `<parent>/<n>`.
- *  The gate must treat these exactly like model-issued calls — this pins that
- *  semantic so the codemodeNestedCalls policy work (ADR-0006) lands on a tested base. */
-const nestedCall = (h: Harness, toolName: string, input: any, n = 1) =>
-	h.handlers.tool_call({ toolName, input, toolCallId: `tc_parent/${n}`, parentToolCallId: "tc_parent" }, h.ctx);
-
 /** 开一个会话:按 cfg 写真实配置 → 建 harness → 装载扩展。顺序约束(配置先于装载)
  *  内化于此;opts 统一收纳全部变体:cwd/ompRegistry 给 makeHarness,
  *  invalid/flag/debug/modelFlag/compatLoader 分别传给 setConfig 与 install。 */
-function session(cfg: Parameters<typeof setConfig>[0], opts: { cwd?: string; ompRegistry?: boolean; invalid?: string[]; flag?: boolean; debug?: boolean; modelFlag?: string; compatLoader?: () => Promise<{ complete: any }> } = {}): Harness {
+function session(cfg: Parameters<typeof setConfig>[0], opts: { cwd?: string; invalid?: string[]; flag?: boolean; debug?: boolean; modelFlag?: string; completionHost?: { complete: any } } = {}): Harness {
 	setConfig(cfg, opts.invalid);
-	const h = makeHarness(opts.cwd, { ompRegistry: opts.ompRegistry });
-	h.install({ flag: opts.flag, debug: opts.debug, modelFlag: opts.modelFlag, compatLoader: opts.compatLoader });
+	const h = makeHarness(opts.cwd);
+	h.install({ flag: opts.flag, debug: opts.debug, modelFlag: opts.modelFlag, completionHost: opts.completionHost });
 	return h;
 }
 
@@ -510,11 +516,11 @@ describe("S-rule case folding + firmlink prefixes (#21)", () => {
 		expect(h.calls.length).toBe(0);
 	});
 
-	test("write AUTH.json under a case-variant .pi/agent path denies (S0 /i; target absent so realpath cannot normalize)", async () => {
+	test("write AGENT.DB under a case-variant .omp/agent path denies (S0 /i; target absent so realpath cannot normalize)", async () => {
 		await withTempDir(".pv-t21-auth-", async (tmp) => {
-				fs.mkdirSync(path.join(tmp, ".pi", "agent"), { recursive: true });
+				fs.mkdirSync(path.join(tmp, ".omp", "agent"), { recursive: true });
 				const h = session({});
-				const r = await toolCall(h, "write", { path: path.join(tmp, ".pi", "agent", "AUTH.json"), content: "x" });
+				const r = await toolCall(h, "write", { path: path.join(tmp, ".omp", "agent", "AGENT.DB"), content: "x" });
 				expect(r?.block).toBe(true);
 				expect(String(r?.reason)).toContain("S0");
 				expect(h.calls.length).toBe(0);
@@ -637,27 +643,27 @@ describe("classifier model resolution", () => {
 		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("nope/missing"));
 		expect(warns.length).toBe(1); // 仅一次
 	});
-	test("pi-native thinking suffix: zai/flash:low → effort low (adaptive)", async () => {
+	test("thinking suffix: zai/flash:low → reasoning low", async () => {
 		const h = session({ classifierModel: "zai/flash:low" });
 		h.findMap = { "zai/flash": { id: "glm-4-flash" } };
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
 		expect(h.calls[0].model).toBe("glm-4-flash");
-		expect(h.calls[0].thinkingEnabled).toBe(true);
-		expect(h.calls[0].effort).toBe("low");
+		expect(h.calls[0].reasoning).toBe("low");
+		expect(h.calls[0].disableReasoning).toBeUndefined();
 	});
-	test("suffix minimal maps to effort low; no suffix stays explicit off", async () => {
+	test("suffix minimal maps to reasoning low; no suffix disables reasoning", async () => {
 		const h = session({ classifierModel: "zai/flash:minimal" });
 		h.findMap = { "zai/flash": { id: "glm-4-flash" } };
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }, { text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
-		expect(h.calls[0].effort).toBe("low"); // minimal → low(anthropic effort 无 minimal)
+		expect(h.calls[0].reasoning).toBe("low"); // minimal → low (omp Effort has no minimal)
 		setConfig({ classifierModel: "zai/flash" });
 		h.handlers.session_start?.({}, h.ctx); // 重载配置
 		h.findMap = { "zai/flash": { id: "glm-4-flash" } };
 		await toolCall(h, "bash", { command: "cargo build" });
-		expect(h.calls[1].thinkingEnabled).toBe(false); // 无后缀 = 显式关思考
-		expect(h.calls[1].effort).toBeUndefined();
+		expect(h.calls[1].disableReasoning).toBe(true); // no suffix = thinking explicitly off
+		expect(h.calls[1].reasoning).toBeUndefined();
 	});
 	test("invalid suffix warned once and ignored", async () => {
 		const h = session({ classifierModel: "zai/flash:ultra" });
@@ -682,39 +688,32 @@ describe("classifier model resolution", () => {
 
 describe("classifier mode feedback (#81)", () => {
 	beforeEach(() => { delete process.env.PI_AUTO_MODE_MODEL; }); // jevLayer's env channel is per-test only
-	test("floor + LLM: one neutral warning at the first gray-zone resolution (explicit and self-reflection paths), never a demotion", async () => {
+	test("floor on a chat layer is inert: a low-confidence-looking reason never demotes", async () => {
 		clearAudit();
-		const h = session({ audit: true, classifierMinConfidence: 50 }); // no classifierModel → self-reflection session model (LLM)
-		const w = await toolCall(h, "write", { path: "src/new.ts" }); // rule allow: lazy resolution — no warning yet
+		const h = session({ audit: true, classifierMinConfidence: 50 }); // no classifierModel → self-reflection (chat)
+		const w = await toolCall(h, "write", { path: "src/new.ts" }); // rule allow: lazy resolution
 		expect(w).toBeUndefined();
-		expect(h.notifies.some(([m, l]) => l === "warning" && m.includes("classifierMinConfidence has no effect"))).toBe(false);
-		h.responses = [{ text: "<verdict>allow</verdict> jev: allow 66% (confidence 49%; ask 33%, deny 1%)" }]; // LLM free text happens to embed the jev format
+		h.responses = [{ text: "<verdict>allow</verdict> jev: allow 66% (confidence 49%; ask 33%, deny 1%)" }]; // free text that mimics the jev shape
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
-		expect(r).toBeUndefined(); // no demotion — the floor is inert for an LLM layer
-		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("classifierMinConfidence has no effect"));
-		expect(warns.length).toBe(1);
-		expect(warns[0][0]).toContain("chat-model classifier");
-		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
-		await toolCall(h, "bash", { command: "ls -la /tmp" }); // warn-once latch
-		expect(h.notifies.filter(([m, l]) => l === "warning" && m.includes("classifierMinConfidence has no effect")).length).toBe(1);
+		expect(r).toBeUndefined(); // no demotion — chat outcomes carry no protocol confidence
+		expect(h.confirms).toBe(0);
 		expect(readAudit().every((rec: any) => rec.demoted === undefined)).toBe(true);
-		const h2 = session({ classifierModel: "mock/glm", classifierMinConfidence: 50 }); // explicit LLM model
+		const h2 = session({ classifierModel: "mock/glm", classifierMinConfidence: 50 }); // explicit chat model
 		h2.findMap = { "mock/glm": { id: "glm" } };
 		h2.responses = [{ text: "<verdict>allow</verdict> fine" }];
 		await toolCall(h2, "bash", { command: "ls -la /tmp" });
-		expect(h2.notifies.some(([m, l]) => l === "warning" && m.includes("classifierMinConfidence has no effect"))).toBe(true);
+		expect(h2.confirms).toBe(0);
 	});
 
-	test("typesafe/jev-latest unresolvable → specialized wording (registerProvider / keys), not the generic miss — on both layers", async () => {
+	test("unresolvable jev spec → specialized wording (judge-kind, use a chat model), not the generic miss — on both layers", async () => {
 		const h = session({ classifierModel: "typesafe/jev-latest" });
 		h.findMap = {}; // registry miss → falls back to the session model with one warning
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
 		const warn = h.notifies.find(([m, l]) => l === "warning" && m.includes("unavailable"))?.[0] ?? "";
 		expect(warn).toContain("typesafe/jev-latest");
-		expect(warn).toContain("native classifier support");
-		expect(warn).toContain("TYPESAFE_API_KEY");
-		expect(warn).toContain("openrouter");
+		expect(warn).toContain("judge-kind models");
+		expect(warn).toContain("chat model");
 		expect(warn).not.toContain("not found or no configured auth");
 		const h2 = session({ classifierModel: "prov/ghost" }); // generic wording survives for other models
 		h2.findMap = {};
@@ -729,19 +728,18 @@ describe("classifier mode feedback (#81)", () => {
 		h3.responses = [{ text: "", stopReason: "error" }, { text: "", stopReason: "error" }]; // both LLM attempts fail → cascade
 		await toolCall(h3, "bash", { command: "ls -la /tmp" });
 		const warn3 = h3.notifies.find(([m, l]) => l === "warning" && m.includes("fallback model"))?.[0] ?? "";
-		expect(warn3).toContain("native classifier support");
-		expect(warn3).toContain("TYPESAFE_API_KEY");
+		expect(warn3).toContain("judge-kind models");
 	});
 
 	test("typesafe/jev-latest:low → suffix warning once; the call still runs on jev; audit thinking is null (#81)", async () => {
 		clearAudit();
 		const h = session({ audit: true });
-		jevLayer(h, "typesafe/jev-latest:low"); // native resolution with the suffix: findOfType + classify seam
+		jevLayer(h, "typesafe/jev-latest:low"); // judgment resolution with the suffix: ctx.models + native judge
 		h.responses = [{ text: "<verdict>allow</verdict> jev: allow 90% (confidence 80%; ask 9%, deny 1%)" }, { text: "<verdict>allow</verdict> jev: allow 90% (confidence 80%; ask 9%, deny 1%)" }];
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r).toBeUndefined();
 		expect(h.calls.length).toBe(0); // native path: no chat completion
-		expect(h.classifyCalls[0].model).toBe("jev-latest");
+		expect(h.judgeCalls.length).toBe(1); // native judgment path: no chat completion
 		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("thinking suffix"));
 		expect(warns.length).toBe(1);
 		expect(warns[0][0]).toContain('"low"');
@@ -767,11 +765,10 @@ describe("classifier mode feedback (#81)", () => {
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
 		await toolCall(h, "bash", { command: "cargo build" });
 		const warn = h.notifies.find(([m, l]) => l === "warning" && m.includes("unavailable"))?.[0] ?? "";
-		expect(warn).toContain("native classifier support"); // the suffix no longer hides the specialized wording
+		expect(warn).toContain("judge-kind models"); // the suffix no longer hides the specialized wording
 		expect(h.notifies.some(([m, l]) => l === "warning" && m.includes("thinking suffix"))).toBe(false); // "ignored" would be false on this path
 		expect(h.calls[0].model).toBe("mock/glm");
-		expect(h.calls[0].thinkingEnabled).toBe(true); // the explicit suffix survives the fallback (standing semantics)
-		expect(h.calls[0].effort).toBe("low");
+		expect(h.calls[0].reasoning).toBe("low"); // the explicit suffix survives the chat fallback
 	});
 
 	test("fallback layer: a thinking suffix on the jev spec warns once when the fallback resolves", async () => {
@@ -781,22 +778,21 @@ describe("classifier mode feedback (#81)", () => {
 		h.responses = [{ text: "<verdict>allow</verdict> jev: allow 90% (confidence 80%; ask 9%, deny 1%)" }, { text: "<verdict>allow</verdict> jev: allow 90% (confidence 80%; ask 9%, deny 1%)" }];
 		await toolCall(h, "bash", { command: "ls -la /tmp" }); // conf 80 < floor 100 → demotion → fallback
 		const warns = h.notifies.filter(([m, l]) => l === "warning" && m.includes("thinking suffix"));
-		expect(warns.length).toBe(1);
-		expect(h.classifyCalls.length).toBe(2); // first layer + fallback, both native
-		expect(h.classifyCalls[1].model).toBe("jev-latest"); // the second classify call is the fallback
+		expect(warns.length).toBe(1); // one latch across both native layers
+		expect(h.judgeCalls.length).toBe(2); // first layer + fallback, both native
 	});
 });
 
 // ── 4. 分类器(重试矩阵 + 参数形态) ─────────────────────
 
 describe("classifier", () => {
-	test("success on first try: single call, thinkingEnabled=false, maxTokens=512", async () => {
+	test("success on first try: single call, reasoning disabled, maxTokens=512", async () => {
 		const h = session({});
 		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
 		const r = await toolCall(h, "bash", { command: "cargo build" });
 		expect(r).toBeUndefined();
 		expect(h.calls.length).toBe(1);
-		expect(h.calls[0]).toMatchObject({ model: "mock/glm", maxTokens: 512, thinkingEnabled: false });
+		expect(h.calls[0]).toMatchObject({ model: "mock/glm", maxTokens: 512, disableReasoning: true });
 	});
 	test("empty output → retry at 1024, verdict honored", async () => {
 		const h = session({});
@@ -1241,7 +1237,7 @@ describe("denyPaths (ADR-0002)", () => {
 		expect(String(r?.reason)).toContain("non-interactive");
 	});
 
-	test("write/edit/grep/find/ls over a denyPath all hit (file names leak too)", async () => {
+	test("write/edit/grep/find/glob over a denyPath all hit (file names leak too)", async () => {
 		// write/edit use a home-based base: SENS lives under os.tmpdir() → /var/... (S1
 		// system dir), where a write is floor-denied BEFORE denyPaths (ADR-0002 priority:
 		// built-in floor deny > denyPaths ask) — the block, not a confirm, would fire
@@ -1251,7 +1247,7 @@ describe("denyPaths (ADR-0002)", () => {
 			["edit", homeBase, { path: path.join(homeBase, "secret.md") }],
 			["grep", SENS, { path: SENS }],
 			["find", SENS, { path: SENS }],
-			["ls", SENS, { path: SENS }],
+			["glob", SENS, { path: SENS }],
 		] as const) {
 			const h = session({ denyPaths: [base] });
 			await toolCall(h, tool, input);
@@ -1324,18 +1320,18 @@ describe("denyPaths (ADR-0002)", () => {
 		expect(String(r?.reason)).toContain("user deny rule");
 	});
 
-	test("priority: denyPaths hit overrides user allow (^ls\\b + ls over denyPath → confirm)", async () => {
-		const h = session({ allow: ["^ls\\b"], denyPaths: [SENS] });
-		await toolCall(h, "ls", { path: SENS });
+	test("priority: denyPaths hit overrides user allow (allow rule + grep over denyPath → confirm)", async () => {
+		const h = session({ allow: ["secret"], denyPaths: [SENS] });
+		await toolCall(h, "grep", { pattern: "secret", path: SENS });
 		expect(h.confirms).toBe(1); // ask despite the allow rule
 		expect(h.calls.length).toBe(0);
 	});
 
-	// ── subtree scope (#48, discussion #8803): grep/find/ls search a directory
-	// subtree; an omitted path is pi's documented default (cwd). Both directions
+	// ── subtree scope (#48): grep/glob/find search a directory subtree; an omitted
+	// path is omp's documented default (the workspace root / cwd). Both directions
 	// hit: cwd containing a declaration, cwd inside a declaration. ──
-	test("omitted path hits in both directions for grep/find/ls (cwd subtree scope)", async () => {
-		const trio = [["grep", { pattern: "secret" }], ["find", { pattern: "*.md" }], ["ls", {}]] as const;
+	test("omitted path hits in both directions for grep/glob/find (cwd subtree scope)", async () => {
+		const trio = [["grep", { pattern: "secret" }], ["glob", { pattern: "*.md" }], ["find", { query: "secret", grep_keywords: ["secret"] }]] as const;
 		for (const [tool, input] of trio) {
 			// descendant: the declaration sits under the cwd (previously: plain
 			// rule-layer allow — zero asks, zero classifier calls, content leak)
@@ -1734,129 +1730,6 @@ describe("macOS tmpdir S1 exemption (#83)", () => {
 // incl. serial adjudication of Promise.all batches at ~350ms/call, floor denies
 // returning as script errors, and denyPaths asks surfacing the confirm dialog)──
 
-describe("nested codemode calls: gated identically to direct calls (A2 baseline)", () => {
-	test("nested gray-zone call adjudicates identically to the direct form", async () => {
-		const h1 = session({});
-		h1.responses = [{ text: "<verdict>allow</verdict> fine" }];
-		const direct = await toolCall(h1, "bash", { command: "ls -la /tmp" });
-		const h2 = session({});
-		h2.responses = [{ text: "<verdict>allow</verdict> fine" }];
-		const nested = await nestedCall(h2, "bash", { command: "ls -la /tmp" });
-		expect(nested).toBeUndefined(); // same allow, same single classifier call
-		expect(h2.calls.length).toBe(1);
-		expect(direct).toBeUndefined();
-	});
-
-	test("nested floor deny blocks (rm-recursive) and leaves no audit record — the script sees the error", async () => {
-		clearAudit();
-		const h = session({ audit: true });
-		const r = await nestedCall(h, "bash", { command: "rm -rf /tmp/pv-a2-x" });
-		expect(r?.block).toBe(true);
-		expect(String(r?.reason)).toContain("recursive delete");
-		expect(h.calls.length).toBe(0); // deterministic — never reaches the classifier
-		expect(fs.existsSync(path.join(VERDICTS(), "s1.jsonl"))).toBe(false); // floor denies stay unaudited (live-fire: the rm leg left no record)
-	});
-
-	test("nested denyPaths hit asks with the zero-leak wording and records the user's answer", async () => {
-		clearAudit();
-		const h = session({ audit: true, denyPaths: [path.join(TMP_AGENT, "nested-dp")] });
-		h.confirmAnswer = false; // decline — the script gets the block
-		const r = await nestedCall(h, "read", { path: path.join(TMP_AGENT, "nested-dp", "f") });
-		expect(r?.block).toBe(true);
-		expect(String(r?.reason)).not.toContain("nested-dp"); // zero-leak: plaintext never in reasons
-		const rec = readAudit()[0];
-		expect(rec).toMatchObject({ verdict: "ask", source: "protected-path", userAnswer: "declined" }); // pendingAudit finalize carries ground truth (live-fire: declined ~/.zshrc leg)
-		expect(rec.detail).toContain("nested-dp"); // plaintext lives only in the UI-only detail channel
-	});
-});
-
-
-// ── 10.4e codemodeNestedCalls policy (#90/ADR-0006: layered exemption + audit attribution)──
-
-describe("codemodeNestedCalls policy (#90)", () => {
-	test("gate default: direct and nested gray-zone calls reach the classifier identically (deny/ask shapes too — the #89-review deferred assertions)", async () => {
-		for (const reply of ["<verdict>deny</verdict> bad", "<verdict>ask</verdict> needs a human"]) {
-			const hDirect = session({});
-			hDirect.responses = [{ text: reply }];
-			const direct = await toolCall(hDirect, "bash", { command: "curl https://x.example" });
-			const hNested = session({});
-			hNested.responses = [{ text: reply }];
-			const nested = await nestedCall(hNested, "bash", { command: "curl https://x.example" });
-			expect(nested?.block).toBe(direct?.block); // deny: both blocked; ask: both undefined (confirmAnswer=true allows)
-			expect(nested?.reason).toBe(direct?.reason);
-			expect(hNested.calls.length).toBe(1);
-		}
-	});
-
-	test("rules-only: nested rm-recursive still denies via the floor, zero model calls", async () => {
-		const h = session({ codemodeNestedCalls: "rules-only" });
-		const r = await nestedCall(h, "bash", { command: "rm -rf /tmp/pv-a2-x" });
-		expect(r?.block).toBe(true);
-		expect(String(r?.reason)).toContain("recursive delete");
-		expect(h.calls.length).toBe(0);
-	});
-
-	test("rules-only: nested denyPaths hit still asks (dialog semantics preserved) and the record carries attribution", async () => {
-		clearAudit();
-		const h = session({ codemodeNestedCalls: "rules-only", audit: true, denyPaths: [path.join(TMP_AGENT, "dp90")] });
-		h.confirmAnswer = false;
-		const r = await nestedCall(h, "read", { path: path.join(TMP_AGENT, "dp90", "f") }, 3);
-		expect(r?.block).toBe(true);
-		const rec = readAudit()[0];
-		expect(rec).toMatchObject({ verdict: "ask", source: "protected-path", userAnswer: "declined", parentToolCallId: "tc_parent", toolCallId: "tc_parent/3" });
-		expect(rec.policy).toBeUndefined(); // an ask is not a passthrough — no policy marker
-	});
-
-	test("rules-only: nested gray-zone passes with ZERO classifier calls, audited with the policy marker", async () => {
-		clearAudit();
-		const h = session({ codemodeNestedCalls: "rules-only", audit: true });
-		const r = await nestedCall(h, "bash", { command: "ls -la /tmp" });
-		expect(r).toBeUndefined(); // allow — no confirm, no model
-		expect(h.calls.length).toBe(0);
-		expect(h.confirms).toBe(0);
-		const rec = readAudit()[0];
-		expect(rec).toMatchObject({ verdict: "allow", source: "rule", policy: "rules-only", parentToolCallId: "tc_parent" });
-		expect(rec.reason).toContain("rules-only");
-	});
-
-	test("rules-only: DIRECT gray-zone calls still reach the classifier (the policy is nested-only)", async () => {
-		const h = session({ codemodeNestedCalls: "rules-only" });
-		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
-		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
-		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(1);
-	});
-
-	test("rules-only: a 50-call nested batch completes with no model calls at all", async () => {
-		const h = session({ codemodeNestedCalls: "rules-only" });
-		for (let i = 1; i <= 50; i++) {
-			const r = await nestedCall(h, "bash", { command: `ls /tmp/file-${i}` }, i);
-			expect(r).toBeUndefined();
-		}
-		expect(h.calls.length).toBe(0);
-	});
-
-	test("invalid values warn once and behave as gate", async () => {
-		const h = session({ codemodeNestedCalls: "rulesonly" as unknown });
-		await h.handlers.session_start({}, h.ctx);
-		const warnings = h.notifies.filter(([m]) => m.includes("skipped")).map(([m]) => m).join(" ");
-		expect(warnings).toContain("codemodeNestedCalls");
-		h.responses = [{ text: "<verdict>allow</verdict> fine" }];
-		const r = await nestedCall(h, "bash", { command: "ls -la /tmp" });
-		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(1); // gate semantics: the classifier still ran
-	});
-
-	test("/automode status surfaces the active exemption", async () => {
-		const h = session({ codemodeNestedCalls: "rules-only" });
-		await h.commands.automode.handler("", h.ctx);
-		const line = h.notifies.map(([m]) => m).find((m) => m.includes("nested calls: rules-only"));
-		expect(line).toBeTruthy();
-	});
-});
-
-// ── 10.4f virtual session model (D6: self-reflection pass-through, pi 1.0 createVirtualModel shape)──
-
 describe("virtual session model (D6)", () => {
 	/** The real shape pi 1.0's createVirtualModel() produces: api "pi-virtual", a
 	 *  thinkingLevelMap, zero cost, empty baseUrl. The gate must treat it like any
@@ -1899,14 +1772,13 @@ describe("virtual session model (D6)", () => {
 		expect(rec).toMatchObject({ model: "auto", verdict: "allow" }); // audit carries the virtual id
 	});
 
-	test("no demotion for virtual-model verdicts (no protocol confidence); the floor-inert warning applies", async () => {
+	test("no demotion for chat-path verdicts (no protocol confidence)", async () => {
 		const h = session({ audit: true, classifierMinConfidence: 90 });
 		h.ctx.model = VIRTUAL; // virtual session model via self-reflection
 		h.responses = [{ text: "<verdict>allow</verdict> jev: allow 90% (confidence 50%; ask 10%, deny 0%)" }];
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r).toBeUndefined(); // allow stands: chat-path outcomes carry no confidence, never demote
 		expect(h.confirms).toBe(0);
-		expect(h.notifies.some(([m]) => m.includes("chat-model classifier"))).toBe(true); // floor inert, warned once
 	});
 });
 
@@ -2000,107 +1872,6 @@ describe("agent-facing block reason form (#53)", () => {
 });
 
 // ── 10.7 verdict audit records (#54: opt-in JSONL decision records) ──
-
-describe("subagent-artifacts write exemption, headless-only (ADR-0008)", () => {
-	const SESS = () => path.join(TMP_AGENT, "sessions");
-	const ART = (p = "outputs/6e055/context.md") => path.join(SESS(), "proj-1/subagent-artifacts", p);
-
-	test("headless write under sessions/**/subagent-artifacts/ passes deterministically — zero classifier calls", async () => {
-		const h = session({});
-		h.ctx.hasUI = false; // the production false-positive: a subagent session has no UI
-		const r = await toolCall(h, "write", { path: ART(), content: "x" });
-		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(0); // deterministic layer — the classifier never saw it
-	});
-
-	test("headless edit likewise passes", async () => {
-		const h = session({});
-		h.ctx.hasUI = false;
-		const e = await toolCall(h, "edit", { path: ART(), oldText: "x", newText: "y" });
-		expect(e).toBeUndefined();
-		expect(h.calls.length).toBe(0);
-	});
-
-	test("interactive sessions keep their ask capability — same write goes to the classifier", async () => {
-		const h = session({});
-		h.ctx.hasUI = true;
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		const r = await toolCall(h, "write", { path: ART(), content: "x" });
-		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(1);
-	});
-
-	test("sessions/ paths outside the subagent-artifacts subtree are not exempt (headless or not)", async () => {
-		const h = session({});
-		h.ctx.hasUI = false;
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		const r = await toolCall(h, "write", { path: path.join(SESS(), "s1/notes.md"), content: "x" });
-		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(1); // gray — the classifier adjudicated it
-	});
-
-	test("reads and bash under the subtree are not exempt (read-allow grade / classifier)", async () => {
-		const h = session({});
-		h.ctx.hasUI = false;
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		const rd = await toolCall(h, "read", { path: ART() });
-		expect(rd).toBeUndefined();
-		expect(h.calls.length).toBe(0); // reads keep the ordinary read-allow grade, no classifier
-		const bs = await toolCall(h, "bash", { command: `echo hi > ${ART("out.txt")}` });
-		expect(bs).toBeUndefined();
-		expect(h.calls.length).toBe(1); // bash stays classifier-adjudicated
-	});
-
-	test("a symlink escaping the subtree earns no exemption (every-form intersection)", async () => {
-		await withTempDir(".pv-sess-real-", async (real) => {
-			fs.writeFileSync(path.join(real, "out.md"), "x");
-			fs.mkdirSync(path.dirname(ART()), { recursive: true });
-			const alias = ART("alias-out.md");
-			fs.symlinkSync(path.join(real, "out.md"), alias); // existing target: the real form resolves outside sessions/
-			const h = session({});
-			h.ctx.hasUI = false;
-			h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-			const r = await toolCall(h, "write", { path: alias, content: "x" });
-			expect(r).toBeUndefined();
-			expect(h.calls.length).toBe(1); // real form escapes → every-form semantics denies the exemption → classifier
-			fs.rmSync(alias);
-			fs.rmSync(path.join(SESS(), "proj-1"), { recursive: true, force: true });
-		});
-	});
-
-	test("the floor and self-protection outrank the exemption", async () => {
-		// floor: an artifacts alias onto an existing system file denies before the exemption can lift anything
-		fs.mkdirSync(path.dirname(ART()), { recursive: true });
-		const sysAlias = ART("sys-alias");
-		fs.symlinkSync("/etc/passwd", sysAlias);
-		const h1 = session({});
-		h1.ctx.hasUI = false;
-		const fd = await toolCall(h1, "write", { path: sysAlias, content: "x" });
-		expect(fd?.block).toBe(true);
-		expect(fd!.reason).toContain("system directory"); // S1 floor, not the exemption's reason
-		fs.rmSync(sysAlias);
-		fs.rmSync(path.join(SESS(), "proj-1"), { recursive: true, force: true });
-		// self-protection: the gate's own config stays denied
-		const h2 = session({});
-		const cfg = await toolCall(h2, "write", { path: path.join(TMP_AGENT, "config", "pi-verdict.json"), content: "{}" });
-		expect(cfg?.block).toBe(true);
-		expect(cfg!.reason).toContain("self-protection");
-	});
-
-	test("user declarations outrank the exemption (denyPaths ask, user deny)", async () => {
-		const h1 = session({ denyPaths: [path.join(TMP_AGENT, "sessions")] });
-		h1.ctx.hasUI = false;
-		h1.confirmAnswer = false;
-		const r1 = await toolCall(h1, "write", { path: ART(), content: "x" });
-		expect(r1?.block).toBe(true); // denyPaths terminal ask, degraded to deny headless
-		expect(r1!.reason).toContain("protected-path");
-		const h2 = session({ deny: ["sessions"] });
-		h2.ctx.hasUI = false;
-		const r2 = await toolCall(h2, "write", { path: ART(), content: "x" });
-		expect(r2?.block).toBe(true); // user deny rule
-		expect(r2!.reason).toContain("user deny");
-	});
-});
 
 describe("audit secret redaction (ADR-0007)", () => {
 	const SK = SYNTH_SK;
@@ -2576,7 +2347,7 @@ describe("confidence floor + cascade (#67)", () => {
 		expect(r1?.block).toBe(true);
 		expect(r1.reason).toContain("user-declined");
 		expect(h1.confirms).toBe(1);
-		expect(h1.classifyCalls.length).toBe(1); // native path: no chat completion
+		expect(h1.judgeCalls.length).toBe(1); // native path: no chat completion
 		const recs = readAudit();
 		expect(recs.length).toBe(1);
 		expect(recs[0]).toMatchObject({ verdict: "allow", demoted: true, userAnswer: "declined" });
@@ -2653,7 +2424,7 @@ describe("confidence floor + cascade (#67)", () => {
 		expect(r).toBeUndefined(); // the fb deny does not auto-block in shadow
 		expect(h.confirms).toBe(1);
 		expect(h.calls.length).toBe(1); // the fallback's chat call
-		expect(h.classifyCalls.length).toBe(1); // the first layer's native call
+		expect(h.judgeCalls.length).toBe(1); // the first layer's native call
 		const recs = readAudit();
 		expect(recs[0]).toMatchObject({ verdict: "allow", demoted: true, userAnswer: "allowed" });
 		expect(recs[0].fallback).toMatchObject({ mode: "shadow", triggeredBy: "confidence", confidence: 49, verdict: "deny" });
@@ -2917,13 +2688,13 @@ describe("confidence floor + cascade (#67)", () => {
 			const env = {
 				cwd: "/proj",
 				hasUI: true,
-				getModel: () => ({ kind: "native", model: { type: "classifier", id: "glm-jev", api: "typesafe-system-one", provider: "typesafe" }, thinking: "off" as const }),
+				getModel: () => ({ kind: "native", model: { id: "glm-jev", api: "typesafe", provider: "typesafe" }, thinking: "off" as const }),
 				getFallbackModel: () => ({ kind: "chat", model: { id: "fb-model" }, thinking: "off" as const }),
 				signal: ctrl.signal,
-				classify: (async () => {
+				getJudge: () => async () => {
 					ctrl.abort(); // abort during the first (native) layer — the fallback attempt sees the aborted signal
-					return { stopReason: "stop", answers: { verdict: { type: "choice", choice: "allow", probabilities: { allow: 0.66, ask: 0.33, deny: 0.01 }, confidence: 0.49 } } };
-				}) as any,
+					return { api: "typesafe", model: "glm-jev", answers: { verdict: { type: "choice", choice: "allow", probabilities: { allow: 0.66, ask: 0.33, deny: 0.01 }, confidence: 0.49 } } };
+				},
 				complete: (async () => ({ content: [{ type: "text", text: "<verdict>allow</verdict> fb" }], stopReason: "stop" })) as any,
 				host: { getBranch: () => [], getSessionId: () => "s1" },
 			};
@@ -3016,140 +2787,86 @@ describe("notifyAllows (#60)", () => {
 
 // ── 11. omp 宿主支持(#35:completion 降级 / agentDir 自锚定 / omp 形态保护)──
 
-describe("completion fallback (omp runtime shape, #35)", () => {
-	test("bindCompletion: registry with complete binds it directly, loader untouched", async () => {
-		let loads = 0;
-		const registry = {
-			complete: async () => { loads += 1000; return { content: [{ type: "text", text: "x" }] }; },
-		};
-		const fn = bindCompletion(registry, () => { loads += 1; return Promise.resolve({ complete: async () => ({ content: [] }) }); });
-		await fn({ id: "m" } as any, { systemPrompt: "s", messages: [] }, { maxTokens: 5 });
-		expect(loads).toBe(1000); // registry path taken, loader never invoked
-	});
-
-	test("bindCompletion: registry without complete falls back to the compat loader, options passed through", async () => {
+describe("completion binding (omp shape, #35)", () => {
+	test("bindCompletion passes omp's resolver + session id to the host", async () => {
 		const seen: any[] = [];
-		const compat = {
-			complete: async (m: any, c: any, o: any) => {
-				seen.push({ m, c, o });
+		const host = {
+			complete: async (_m: any, _c: any, o: any) => {
+				seen.push(o);
 				return { content: [{ type: "text", text: "<verdict>deny</verdict> t" }], stopReason: "stop" };
 			},
 		};
-		let loads = 0;
-		const fn = bindCompletion({}, async () => { loads += 1; return compat; });
-		const r1 = await fn({ id: "mock/glm" } as any, { systemPrompt: "sys", messages: [{ role: "user", content: "q" }] }, { signal: "s", maxTokens: 512, temperature: 0, thinkingEnabled: false, cacheRetention: "short", sessionId: "s1" });
-		const r2 = await fn({ id: "mock/glm" } as any, { systemPrompt: "sys", messages: [] }, { maxTokens: 1024 });
-		expect(loads).toBe(1); // loader resolved once, then cached
-		expect(seen.length).toBe(2);
-		expect(seen[0].o.maxTokens).toBe(512);
-		expect(seen[0].o.thinkingEnabled).toBe(false);
-		expect(seen[0].o.cacheRetention).toBe("short");
-		expect(seen[1].o.maxTokens).toBe(1024);
-		expect(r1.stopReason).toBe("stop");
+		const registry = { resolver: (_m: any, sid?: string) => ({ apiKey: "k", sessionId: sid }) };
+		const fn = bindCompletion(registry, host, "s1");
+		await fn({ id: "m" } as any, { systemPrompt: "sys", messages: [] }, { maxTokens: 512, temperature: 0 });
+		expect(seen.length).toBe(1);
+		expect(seen[0].maxTokens).toBe(512);
+		expect(seen[0].temperature).toBe(0);
+		expect(seen[0].sessionId).toBe("s1");
+		expect(seen[0].apiKey).toEqual({ apiKey: "k", sessionId: "s1" }); // resolver result forwarded verbatim
 	});
 
-	test("bindCompletion: loader rejection bubbles to the caller (fail-closed path owns it)", async () => {
-		const fn = bindCompletion({}, () => Promise.reject(new Error("compat module unavailable")));
-		await expect(fn({ id: "m" } as any, { systemPrompt: "s", messages: [] })).rejects.toThrow("compat module unavailable");
+	test("bindCompletion omits apiKey when the registry has no resolver", async () => {
+		const seen: any[] = [];
+		const host = { complete: async (_m: any, _c: any, o: any) => { seen.push(o); return { content: [], stopReason: "stop" }; } };
+		const fn = bindCompletion({}, host, undefined);
+		await fn({ id: "m" } as any, { systemPrompt: "s", messages: [] }, { maxTokens: 5 });
+		expect(seen[0].apiKey).toBeUndefined();
+		expect(seen[0].sessionId).toBeUndefined();
 	});
 
-	test("gray zone on an omp-shaped registry adjudicates via the compat loader", async () => {
-		const compatCalls: any[] = [];
-		const compatLoader = async () => ({
+	test("host rejection bubbles to the caller (fail-closed path owns it)", async () => {
+		const host = { complete: async () => { throw new Error("provider unavailable"); } };
+		const fn = bindCompletion({}, host, "s1");
+		await expect(fn({ id: "m" } as any, { systemPrompt: "s", messages: [] })).rejects.toThrow("provider unavailable");
+	});
+
+	test("gray zone runs the chat path with omp-native options", async () => {
+		const calls: any[] = [];
+		const completionHost = {
 			complete: async (m: any, _c: any, o: any) => {
-				compatCalls.push({ model: m?.id, maxTokens: o.maxTokens, temperature: o.temperature, thinkingEnabled: o.thinkingEnabled, disableReasoning: o.disableReasoning, sessionId: o.sessionId });
+				calls.push({ model: m?.id, maxTokens: o.maxTokens, temperature: o.temperature, disableReasoning: o.disableReasoning, sessionId: o.sessionId });
 				return { content: [{ type: "text", text: "<verdict>deny</verdict> classifier says no" }], stopReason: "stop" };
 			},
-		});
-		const h = session({}, { ompRegistry: true, compatLoader });
-		const r = await toolCall(h, "bash", { command: "ls -la /tmp" }); // ordinary command → gray zone
+		};
+		const h = session({}, { completionHost });
+		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r?.block).toBe(true);
-		expect(r.reason).toContain("classifier says no");
-		expect(compatCalls.length).toBe(1);
-		expect(compatCalls[0].model).toBe("mock/glm");
-		expect(compatCalls[0].maxTokens).toBe(512);
-		expect(compatCalls[0].temperature).toBe(0);
-		expect(compatCalls[0].thinkingEnabled).toBe(false);
-		expect(compatCalls[0].disableReasoning).toBe(true); // omp-native off dialect
-		expect(typeof compatCalls[0].sessionId).toBe("string");
+		expect(r!.reason).toContain("classifier says no");
+		expect(calls.length).toBe(1);
+		expect(calls[0].model).toBe("mock/glm");
+		expect(calls[0].maxTokens).toBe(512);
+		expect(calls[0].temperature).toBe(0);
+		expect(calls[0].disableReasoning).toBe(true); // omp-native thinking-off dialect
+		expect(typeof calls[0].sessionId).toBe("string");
 	});
 
 	test("temperature-rejecting classifier model: parameter stripped and retried, then cached (#47)", async () => {
-		const compatCalls: any[] = [];
-		const compatLoader = async () => ({
+		const calls: any[] = [];
+		const completionHost = {
 			complete: async (_m: any, _c: any, o: any) => {
-				compatCalls.push({ temperature: o.temperature, maxTokens: o.maxTokens });
-				if (o.temperature !== undefined) {
-					return { content: [], stopReason: "error", errorMessage: "invalid_request_error: `temperature` is deprecated for this model." };
-				}
-				return { content: [{ type: "text", text: "<verdict>deny</verdict> hot model says no" }], stopReason: "stop" };
-			},
-		});
-		const h = session({ classifierModel: "anthropic/claude-sonnet-5" }, { ompRegistry: true, compatLoader });
-		h.findMap = { "anthropic/claude-sonnet-5": { id: "claude-sonnet-5", api: "anthropic-messages" } };
-		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
-		expect(r?.block).toBe(true);
-		expect(r.reason).toContain("hot model says no");
-		expect(compatCalls.map((c: any) => c.temperature)).toEqual([0, undefined]);
-		expect(compatCalls.map((c: any) => c.maxTokens)).toEqual([512, 512]); // same tier, not the 1024 escalation
-		await toolCall(h, "bash", { command: "cat /etc/hosts" }); // later adjudications omit the parameter upfront
-		expect(compatCalls.length).toBe(3);
-		expect(compatCalls[2].temperature).toBeUndefined();
-	});
-
-	test("temperature rejection via a thrown error also strips and retries (#47)", async () => {
-		let calls = 0;
-		const h = session({ classifierModel: "anthropic/claude-opus-5" }, {
-			ompRegistry: true,
-			compatLoader: async () => ({
-				complete: async (_m: any, _c: any, o: any) => {
-					calls++;
-					if (o.temperature !== undefined) throw new Error("400 Unsupported parameter: temperature");
-					return { content: [{ type: "text", text: "<verdict>allow</verdict> fine" }], stopReason: "stop" };
-				},
-			}),
-		});
-		h.findMap = { "anthropic/claude-opus-5": { id: "claude-opus-5", api: "anthropic-messages" } };
-		const r = await toolCall(h, "bash", { command: "cargo build" });
-		expect(r).toBeUndefined();
-		expect(calls).toBe(2);
-	});
-
-	test("omp fallback forwards the omp-native reasoning dialect for a thinking-suffixed classifier model", async () => {
-		const seen: any[] = [];
-		const h = session({ classifierModel: "mock/glm:medium" }, { ompRegistry: true, compatLoader: async () => ({
-			complete: async (_m: any, _c: any, o: any) => {
-				seen.push(o);
+				calls.push({ temperature: o.temperature });
+				if (o.temperature !== undefined) throw new Error("temperature is deprecated for this model");
 				return { content: [{ type: "text", text: "<verdict>allow</verdict> ok" }], stopReason: "stop" };
 			},
-		}) });
+		};
+		const h = session({}, { completionHost });
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r).toBeUndefined();
-		expect(seen.length).toBe(1);
-		expect(seen[0].thinkingEnabled).toBe(true); // pi dialect still present
-		expect(seen[0].effort).toBe("medium");
-		expect(seen[0].reasoning).toBe("medium"); // omp dialect
+		expect(calls.length).toBe(2);
+		expect(calls[0].temperature).toBe(0);
+		expect(calls[1].temperature).toBeUndefined();
+		await toolCall(h, "bash", { command: "ls -la /tmp" }); // cached: straight to the no-temperature call
+		expect(calls[2].temperature).toBeUndefined();
 	});
 
-	test("compat loader failure → fail-closed deny with notify (both retry attempts share the cached rejection)", async () => {
-		let loads = 0;
-		const h = session({}, { ompRegistry: true, compatLoader: async () => { loads += 1; throw new Error("boom"); } });
+	test("host failure → fail-closed deny with notify (both retry attempts share the failure)", async () => {
+		const completionHost = { complete: async () => { throw new Error("boom"); } };
+		const h = session({}, { completionHost });
 		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
 		expect(r?.block).toBe(true);
-		expect(r.reason).toContain("fail-closed");
-		expect(r.reason).toContain("boom");
-		expect(h.notifies.some(([m]) => m.includes("Auto Mode blocked"))).toBe(true);
-		expect(loads).toBe(1); // loader promise cached across the two retry attempts
-	});
-
-	test("pi-shaped registry never touches the compat loader (regression)", async () => {
-		let loads = 0;
-		const h = session({}, { compatLoader: async () => { loads += 1; throw new Error("loader must not run"); } }); // registry has complete
-		h.responses = [{ text: "<verdict>allow</verdict> ok" }];
-		const r = await toolCall(h, "bash", { command: "ls -la /tmp" });
-		expect(r).toBeUndefined();
-		expect(h.calls.length).toBe(1);
-		expect(loads).toBe(0);
+		expect(r!.reason).toContain("fail-closed");
+		expect(h.notifies.some(([m]) => m.includes("blocked"))).toBe(true);
 	});
 });
 
@@ -3178,14 +2895,14 @@ describe("agentDir self-anchoring (#35)", () => {
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
-	test("pi single-file install form anchors to the pi agent dir", () => {
-		const own = path.join(HOME, ".pi", "agent", "extensions", "pi-verdict.ts");
-		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
+	test("plain omp extension dir anchors to the omp agent dir", () => {
+		const own = path.join(HOME, ".omp", "agent", "extensions", "pi-verdict.ts");
+		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
-	test("pi npm dir install form anchors to the pi agent dir", () => {
-		const own = path.join(HOME, ".pi", "agent", "extensions", "pi-verdict", "extensions", "pi-verdict.ts");
-		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
+	test("project-local .omp extension dir anchors to the omp agent dir", () => {
+		const own = path.join(HOME, ".omp", "extensions", "pi-verdict.ts");
+		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("PI_CODING_AGENT_DIR wins over anchoring", () => {
@@ -3193,16 +2910,16 @@ describe("agentDir self-anchoring (#35)", () => {
 		expect(resolveAgentDir(own, HOME, "/custom/agent")).toBe("/custom/agent");
 	});
 
-	test("dual install: a ~/.omp tree existing must not redirect a pi-anchored run", () => {
-		// The resolver never probes for host trees; presence of ~/.omp is irrelevant
-		// when the extension copy itself lives under ~/.pi (the misrouting trap #35 closes).
-		const piOwn = path.join(HOME, ".pi", "agent", "extensions", "pi-verdict.ts");
-		expect(resolveAgentDir(piOwn, HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
+	test("a ~/.pi tree existing must not redirect an omp-anchored run", () => {
+		// The resolver never probes for host trees; presence of ~/.pi is irrelevant
+		// when the extension copy itself lives under ~/.omp (the misrouting trap #35 closes).
+		const ompOwn = path.join(HOME, ".omp", "agent", "extensions", "pi-verdict.ts");
+		expect(resolveAgentDir(ompOwn, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
-	test("dev checkout (no agent anchor in the path) falls back to ~/.pi/agent", () => {
-		expect(resolveAgentDir("/repo/extensions/pi-verdict.ts", HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
-		expect(resolveAgentDir(null, HOME, undefined)).toBe(path.join(HOME, ".pi", "agent"));
+	test("dev checkout (no agent anchor in the path) falls back to ~/.omp/agent", () => {
+		expect(resolveAgentDir("/repo/extensions/pi-verdict.ts", HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
+		expect(resolveAgentDir(null, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("anchoring also works on the realpath form (symlinked agent tree)", async () => {
@@ -3215,7 +2932,7 @@ describe("agentDir self-anchoring (#35)", () => {
 				const own = path.join(linked, "extensions", "pi-verdict.ts");
 				fs.writeFileSync(own, "// stub");
 				const resolved = resolveAgentDir(own, HOME, undefined);
-				expect(resolved === path.join(base, "agent") || resolved === path.join(HOME, ".pi", "agent")).toBe(true);
+				expect(resolved === path.join(base, "agent") || resolved === path.join(HOME, ".omp", "agent")).toBe(true);
 				// the realpath form must match even though the lexical form does not start with <home>/<dot-dir>
 				expect(resolveAgentDir(fs.realpathSync(own), HOME, undefined)).toBe(fs.realpathSync(base) + "/agent".replace("/", path.sep));
 		}, HOME);
@@ -3224,27 +2941,28 @@ describe("agentDir self-anchoring (#35)", () => {
 
 describe("omp host forms: S0 floor + self-protection (#35)", () => {
 	const HOME = os.homedir();
-	const OMP_AUTH = path.join(HOME, ".omp", "agent", "auth.json");
-	const PI_AUTH = path.join(HOME, ".pi", "agent", "auth.json");
+	const OMP_AGENT_DB = path.join(HOME, ".omp", "agent", "agent.db");
+	const OMP_SECRETS = path.join(HOME, ".omp", "agent", "secrets.yml");
 
-	test("read ~/.omp/agent/auth.json → S0 deny, zero model calls", async () => {
+	test("read ~/.omp/agent/agent.db → S0 deny, zero model calls", async () => {
 		const h = session({});
-		const r = await toolCall(h, "read", { path: OMP_AUTH });
+		const r = await toolCall(h, "read", { path: OMP_AGENT_DB });
 		expect(r?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
 	});
 
-	test("write ~/.omp/agent/auth.json → S0 deny", async () => {
+	test("write ~/.omp/agent/agent.db → S0 deny", async () => {
 		const h = session({});
-		const r = await toolCall(h, "write", { path: OMP_AUTH, content: "{}" });
+		const r = await toolCall(h, "write", { path: OMP_AGENT_DB, content: "x" });
 		expect(r?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
 	});
 
-	test("read ~/.pi/agent/auth.json still denies (regression, pi host)", async () => {
+	test("read ~/.omp/agent/secrets.yml → S0 deny", async () => {
 		const h = session({});
-		const r = await toolCall(h, "read", { path: PI_AUTH });
+		const r = await toolCall(h, "read", { path: OMP_SECRETS });
 		expect(r?.block).toBe(true);
+		expect(h.calls.length).toBe(0);
 	});
 
 	test("buildProtectedSet omp npm form: whole package dir as write-protected prefix + tamper watch", async () => {

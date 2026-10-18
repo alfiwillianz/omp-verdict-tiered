@@ -2,15 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+> **Fork.** This changelog starts from upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict) at 0.15.0 and records this fork's changes. Entries before `[0.16.0-omp.1]` describe upstream behavior and its original (pi) host.
 
 ## [Unreleased]
 
+### Changed
+
+- **omp-only host port.** The extension now targets omp (oh-my-pi) ≥ 18.1 and drops the pi host entirely:
+  - Host API: `@oh-my-pi/pi-coding-agent` types; model lookup through `ctx.models.resolve` (accepts `provider/id`, a bare id, or a role alias); completion through `completeSimple` with `ctx.modelRegistry.resolver(model, sessionId)` so omp's auth rotation and OAuth refresh apply; thinking control in omp's dialect (`disableReasoning` / `reasoning`).
+  - Classifier backends: judgment-kind models (`typesafe`, `openrouter-decisions`, `openai-decisions`, `workers-ai-systemone`) answer through `createNativeJudge` from `@oh-my-pi/pi-ai`, keeping protocol-native confidence and the confidence floor; every other spec runs the chat prompt contract. pi's `classify()` / `findOfType` path is gone.
+  - Tier 2 adjudicator resolution now uses omp's role aliases (`@adjudicator` → `@smol` → session model) instead of `getModelForRole`.
+  - Tool coverage follows omp's built-ins: `bash` plus `read`/`write`/`edit`/`grep`/`glob`/`find`/`ast_edit`/`ast_grep`. Multi-path tools (`ast_edit`'s `paths[]`, `ast_grep`'s semicolon list) grade every target and take the strictest verdict.
+  - Credential floor targets omp's stores: `~/.omp/agent/agent.db` and `~/.omp/agent/secrets.yml`.
+  - Agent-dir anchoring defaults to `~/.omp/agent`.
+- **Removed, with no omp equivalent**: the codemode nested-call policy (`codemodeNestedCalls`, [ADR-0006](docs/adr/0006-codemode-nested-calls-policy.md)) — omp's `tool_call` event carries no `parentToolCallId`; and the headless subagent-artifacts write exemption ([ADR-0008](docs/adr/0008-agentdir-sessions-write-exemption.md)) — the pi-specific path shape does not exist.
+- **Removed**: `README.zh-CN.md` (English-only docs), the npm publish workflow, and the pi peer dependency.
+- **Docs rewritten for omp**: README, installation guide, configuration reference, security principles, CONTEXT glossary, and the pi-specific ADRs (0003 historical, 0005 rewritten, 0006/0008 withdrawn).
+
 ### Added
 
-- docs: source-installation guide ([installation.md](docs/installation.md)) for this fork — the README quick start now clones and installs the package directory (`pi install "$PWD"`, or `pi -e "$PWD"` for one run) instead of `npm:pi-verdict`, which points at upstream and carries no tiered runtime. The guide covers the pi-managed git install form, the Tier 1 bundle setup, updating, uninstalling, and the single-file `tieredFallback` caveat.
-- **Tiered semantic adjudication** ([ADR-0009](docs/adr/0009-tiered-semantic-adjudication.md)): the gray zone can now run as two tiers instead of one classifier call. **Tier 1** triages shell commands locally with [LANCET-Nano](https://huggingface.co/fingerthief/lancet-nano) v0.4.3 (CodeT5+ 220M INT8 ONNX, CPU, no network): `not_flagged` → allow immediately (measured median 10.1–10.6 ms, p90 ~15.3 ms warm), `risky` → ask (default) or deny via `riskyAction: "block"`, `review`/abstention/oversized input → **Tier 2**. Tier 2 resolves an adjudicator from the host model registry (`getModelForRole("adjudicator")` → `"smol"` → session model; pi 1.0.0 has no role API, so the session model is the documented fallback), sends it the tool call, the condensed transcript and Tier 1's band, and requires strict JSON `{"verdict","reason"}`. Tier 2 `allow` passes; `ask`/`deny` both go to a human (a model may not auto-deny at this tier); any failure — no model, transport error, 5 s timeout, unparseable output — fails closed to ask (headless → deny). Opt-in via a `semanticAdjudication` block; absent, behavior is byte-identical to 0.15.
+- Attribution to the original author (Jesset) in the README and LICENSE notice.
+
+### Added (upstream 0.16 line, carried by this fork)
+
+- docs: source-installation guide ([installation.md](docs/installation.md)) — install forms, the Tier 1 bundle, updating, troubleshooting, and the single-file `tieredFallback` caveat.
+- **Tiered semantic adjudication** ([ADR-0009](docs/adr/0009-tiered-semantic-adjudication.md)): the gray zone can now run as two tiers instead of one classifier call. **Tier 1** triages shell commands locally with [LANCET-Nano](https://huggingface.co/fingerthief/lancet-nano) v0.4.3 (CodeT5+ 220M INT8 ONNX, CPU, no network): `not_flagged` → allow immediately (measured median 10.1–10.6 ms, p90 ~15.3 ms warm), `risky` → ask (default) or deny via `riskyAction: "block"`, `review`/abstention/oversized input → **Tier 2**. Tier 2 resolves an adjudicator through omp's model facade (`@adjudicator` → `@smol` → session model), sends it the tool call, the condensed transcript and Tier 1's band, and requires strict JSON `{"verdict","reason"}`. Tier 2 `allow` passes; `ask`/`deny` both go to a human (a model may not auto-deny at this tier); any failure — no model, transport error, 5 s timeout, unparseable output — fails closed to ask (headless → deny). Opt-in via a `semanticAdjudication` block; absent, behavior is byte-identical to 0.15.
 - `scripts/setup-lancet.ts` (`bun run setup:lancet`): downloads the pinned LANCET-Nano bundle into `~/.cache/pi/lancet-nano`, verifies `export.json` against the release-manifest digest and every model file against `export.json`, cross-checks the tokenizer against `@xenova/transformers`, and supports `--check` (verify only) / `--force` / `--dir`. The runtime re-verifies every file on load; a tampered bundle refuses to load and Tier 1 escalates.
 - Dependency-free byte-level BPE tokenizer (`src/classifiers/tokenizer.ts`) reproducing the reference CodeT5 tokenizer (`vocab.json` + `merges.txt`); ids are pinned against the Python reference in tests.
 - Audit records gain optional `tier1` and `tier2` sub-objects (band, calibrated probability, risk logit, model/role, verdict, duration, error); top-level `source` stays `"model"`/`"fail-closed"` so existing corpus tooling keeps working.

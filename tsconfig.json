@@ -5,10 +5,11 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true,
-    "paths": {
-      "@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"]
-    }
+    "skipLibCheck": true
   },
-  "include": ["extensions/**/*.ts", "src/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "extensions/**/*.ts",
+    "src/**/*.ts",
+    "scripts/**/*.ts"
+  ]
 }

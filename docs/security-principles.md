@@ -1,6 +1,6 @@
 # Security Design Principles
 
-This document states the security design principles behind pi-verdict and how they map to what is actually shipped. It complements the [pipeline](../README.md#pipeline) section in the README and the [ADRs](./adr/). Where a principle describes a direction rather than shipped behavior, it says so explicitly — this document deliberately makes no claims the implementation does not back.
+This document states the security design principles behind pi-verdict (omp fork) and how they map to what is actually shipped. It complements the [pipeline](../README.md#pipeline) section in the README and the [ADRs](./adr/). Where a principle describes a direction rather than shipped behavior, it says so explicitly — this document deliberately makes no claims the implementation does not back.
 
 pi-verdict is a **fail-closed, layered permission gate** for coding agents. It is not a sandbox and does not attempt to formally prove that arbitrary agent-generated programs are safe.
 
@@ -42,7 +42,7 @@ Path decisions use canonical filesystem identity, not lexical strings: lexical +
 
 ### 8. The gate guards itself
 
-The agent must not be able to rewrite the gate and immediately benefit from the rewrite. The self-protection layer ([ADR-0001](./adr/0001-self-protection-layer.md)) — not disableable by any configuration — protects the user-rules config and the extension's own installed copies (pi and omp install forms), with tamper detection as the backstop for rule-layer bypasses (#26, #35).
+The agent must not be able to rewrite the gate and immediately benefit from the rewrite. The self-protection layer ([ADR-0001](./adr/0001-self-protection-layer.md)) — not disableable by any configuration — protects the user-rules config and the extension's own installed copy (the omp plugin layouts and the plain extension dir), with tamper detection as the backstop for rule-layer bypasses (#26, #35).
 
 ### 9. User policy may restrict, and may only weaken by explicit opt-in
 
@@ -50,7 +50,7 @@ User rules are the user's own security declarations (deny beats allow; denyPaths
 
 ### 10. Platform differences are documented, not silently weaker
 
-Security semantics must not silently degrade just because an action is expressed differently. Where full parity is not shipped, the gap is documented instead: on Windows the built-in floor covers bash-shaped patterns only — PowerShell-native dangerous commands rely on the classifier, which fails closed (see [Status & limitations](../README.md#status--limitations)). The same discipline governs pi 0.99's indirect surfaces: codemode nested calls pass through the identical `tool_call` pipeline as direct calls, and MCP tools (`mcp__*`) adjudicate in the gray zone with the classifier backstop — documented in the README's [codemode & MCP](../README.md#pi-099-codemode--mcp-indirect-calls-are-still-gated) section, including the `ignoreTools` name-normalization trap. And the misgrading direction gets fixed rather than papered over: macOS's per-user confstr temp tree (`$TMPDIR`) is no longer graded as a system directory (#83) — the exemption is anchored to the runtime-resolved confstr family so a hand-set `TMPDIR` cannot lift the floor, keeps intersection semantics so symlink escapes still hit S1, and leaves the basename family (`authorized_keys`) and `/var/tmp` in place. The one hard boundary, stated rather than papered over: `--no-extensions` (with or without `-e builtin:*`) runs pi with no extensions loaded — the gate is itself an extension, so it cannot be active in a session that loads none.
+Security semantics must not silently degrade just because an action is expressed differently. Where full parity is not shipped, the gap is documented instead: on Windows the built-in floor covers bash-shaped patterns only — PowerShell-native dangerous commands rely on the classifier, which fails closed (see [Status & limitations](../README.md#status--limitations)). MCP tools (`mcp__*`) adjudicate in the gray zone with the classifier backstop, and `ignoreTools` entries are matched against normalized tool names.
 
 ### 11. Optimize for safe automation, not maximum automation
 
