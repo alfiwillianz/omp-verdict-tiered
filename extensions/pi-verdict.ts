@@ -26,8 +26,11 @@
  *        forms all resolve); a hit → terminal ask (non-interactive degrades to
  *        deny), after user deny, before user allow — a protected path is the user's
  *        exception to their own allow rules
- *   2. Gray zone → model classifier (defaults to "self-reflection": inherits the
- *      session provider/model)
+ *   2. Gray zone → semantic adjudication. Default: one model classifier call
+ *      ("self-reflection": inherits the session provider/model). With a
+ *      `semanticAdjudication` block (ADR-0009): Tier 1 local LANCET-Nano triage
+ *      of shell commands, escalating to a Tier 2 model-registry adjudicator;
+ *      Tier 2 failure fails closed to ask (headless → deny).
  *      - input: CC-style condensed <transcript> (user message stream + tool call
  *        stream, no assistant narration or tool results), action under review
  *        pinned as the last line; when denyPaths are configured a fixed existence
@@ -60,7 +63,8 @@
  *   PI_AUTO_MODE_DEBUG=1           env-var form of the above (kept for compat)
  *   <agentDir>/config/pi-verdict.json   user rules: { allow: [regex], deny: [regex],
  *                                   denyPaths: [path], builtinDenyFloor,
- *                                   classifierModel, toggleShortcut }
+ *                                   classifierModel, toggleShortcut,
+ *                                   semanticAdjudication }
  *                                   match target: bash = full command string /
  *                                   file tools = absolute path; new session applies;
  *                                   protected by the self-protection layer (the
@@ -87,6 +91,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AdjudicatorModel } from "../src/classifiers/omp-adjudicator";
+import type { SemanticAdjudicationConfig, ShellKind, Tier1Fn } from "../src/classifiers/tiered";
 
 // ============================================================================
 // 规则层:bash
@@ -244,7 +250,7 @@ function resolveToggleShortcut(raw: unknown): { key: string | null; warning: str
 	return { key: s, warning: null };
 }
 
-interface UserRules {
+export interface UserRules {
 	allow: RegExp[];
 	deny: RegExp[];
 	/** User-declared protected paths (ADR-0002): plain paths, tool-owned normalization; hit → ask */
@@ -288,9 +294,25 @@ interface UserRules {
 	/** ADR-0007: redact secret-shaped text from audit records before append.
 	 *  Default true; false is the explicit keep-raw escape hatch. */
 	auditRedactSecrets: boolean;
+	/** ADR-0009: tiered semantic adjudication (Tier 1 local Lancet-Nano → Tier 2
+	 *  model-registry adjudicator). null = the block is absent → the legacy
+	 *  single-classifier path stays in charge (upgrade compatibility). */
+	semanticAdjudication: SemanticAdjudicationConfig | null;
 }
 
-const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], ignoreTools: [], builtinDenyFloor: true, classifierModel: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", codemodeNestedCalls: "gate", auditRedactSecrets: true };
+/** ADR-0009 configuration block (shape owned by the tiered pipeline module). */
+export type { SemanticAdjudicationConfig } from "../src/classifiers/tiered";
+
+/** Canonical ADR-0009 defaults. Kept in the extension (not imported) so a
+ *  single-file install keeps loading: the tiered runtime itself is loaded lazily
+ *  and degrades to the legacy classifier path when the package tree is absent. */
+export const DEFAULT_SEMANTIC_ADJUDICATION: SemanticAdjudicationConfig = {
+	tier1Lancet: { enabled: true, modelPath: "~/.cache/pi/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+	tier2Role: "adjudicator",
+	tier2TimeoutMs: 5000,
+};
+
+const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], ignoreTools: [], builtinDenyFloor: true, classifierModel: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", codemodeNestedCalls: "gate", auditRedactSecrets: true, semanticAdjudication: null };
 
 /** This module's own file location (import.meta.url resolved; null = unresolvable). */
 const OWN_FILE_PATH: string | null = (() => {
@@ -364,7 +386,63 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	classifierMinConfidence: null,
 	classifierFallbackModel: null,
 	classifierFallbackMode: "enforce",
+	semanticAdjudication: {
+		tier1Lancet: { enabled: true, modelPath: "~/.cache/pi/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+		tier2Role: "adjudicator",
+		tier2TimeoutMs: 5000,
+	},
 }, null, 2)}\n`;
+
+/** ADR-0009: strict parser for the `semanticAdjudication` block. Unknown keys are
+ *  ignored (forward compatibility), invalid values fall back to the default and
+ *  land in `skipped` — the same invalid-config discipline as the rest of the file. */
+export function resolveSemanticAdjudication(raw: unknown, skipped: string[]): SemanticAdjudicationConfig | null {
+	const defaults = DEFAULT_SEMANTIC_ADJUDICATION;
+	if (raw === undefined) return null;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		skipped.push(`semanticAdjudication: ${JSON.stringify(raw)}`);
+		return defaults;
+	}
+	const block = raw as Record<string, unknown>;
+	const tier1Raw = block.tier1Lancet;
+	let tier1 = defaults.tier1Lancet;
+	if (tier1Raw !== undefined) {
+		if (!tier1Raw || typeof tier1Raw !== "object" || Array.isArray(tier1Raw)) {
+			skipped.push(`semanticAdjudication.tier1Lancet: ${JSON.stringify(tier1Raw)}`);
+		} else {
+			const t = tier1Raw as Record<string, unknown>;
+			const enabled = t.enabled === undefined ? defaults.tier1Lancet.enabled : t.enabled;
+			if (typeof enabled !== "boolean") skipped.push(`semanticAdjudication.tier1Lancet.enabled: ${JSON.stringify(enabled)}`);
+			const modelPath = t.modelPath === undefined ? defaults.tier1Lancet.modelPath : t.modelPath;
+			if (typeof modelPath !== "string" || !modelPath.trim()) skipped.push(`semanticAdjudication.tier1Lancet.modelPath: ${JSON.stringify(modelPath)}`);
+			const riskyThreshold = t.riskyThreshold === undefined ? defaults.tier1Lancet.riskyThreshold : t.riskyThreshold;
+			if (typeof riskyThreshold !== "number" || !Number.isFinite(riskyThreshold) || riskyThreshold <= 0 || riskyThreshold > 1) {
+				skipped.push(`semanticAdjudication.tier1Lancet.riskyThreshold: ${JSON.stringify(riskyThreshold)}`);
+			}
+			const riskyActionRaw = t.riskyAction;
+			if (riskyActionRaw !== undefined && riskyActionRaw !== "ask" && riskyActionRaw !== "block") skipped.push(`semanticAdjudication.tier1Lancet.riskyAction: ${JSON.stringify(riskyActionRaw)}`);
+			tier1 = {
+				enabled: typeof enabled === "boolean" ? enabled : defaults.tier1Lancet.enabled,
+				modelPath: typeof modelPath === "string" && modelPath.trim() ? modelPath.trim() : defaults.tier1Lancet.modelPath,
+				riskyThreshold:
+					typeof riskyThreshold === "number" && Number.isFinite(riskyThreshold) && riskyThreshold > 0 && riskyThreshold <= 1
+						? riskyThreshold
+						: defaults.tier1Lancet.riskyThreshold,
+				riskyAction: riskyActionRaw === "block" ? "block" : "ask",
+			};
+		}
+	}
+	const roleRaw = block.tier2Role;
+	if (roleRaw !== undefined && (typeof roleRaw !== "string" || !roleRaw.trim())) skipped.push(`semanticAdjudication.tier2Role: ${JSON.stringify(roleRaw)}`);
+	const timeoutRaw = block.tier2TimeoutMs;
+	const timeoutOk = typeof timeoutRaw === "number" && Number.isInteger(timeoutRaw) && timeoutRaw >= 100 && timeoutRaw <= 60_000;
+	if (timeoutRaw !== undefined && !timeoutOk) skipped.push(`semanticAdjudication.tier2TimeoutMs: ${JSON.stringify(timeoutRaw)}`);
+	return {
+		tier1Lancet: tier1,
+		tier2Role: typeof roleRaw === "string" && roleRaw.trim() ? roleRaw.trim() : defaults.tier2Role,
+		tier2TimeoutMs: timeoutOk ? (timeoutRaw as number) : defaults.tier2TimeoutMs,
+	};
+}
 
 /**
  * Load user rules. First run generates a template (bare keys + starter lists, no
@@ -384,7 +462,7 @@ function loadUserRules(): { rules: UserRules; skipped: string[]; shortcutWarning
 			} catch { /* 只读环境静默跳过 */ }
 			return { rules: EMPTY_RULES, skipped: [], shortcutWarning: null };
 		}
-		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; ignoreTools?: unknown; builtinDenyFloor?: unknown; classifierModel?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; codemodeNestedCalls?: unknown; auditRedactSecrets?: unknown };
+		let raw: { allow?: unknown; deny?: unknown; denyPaths?: unknown; ignoreTools?: unknown; builtinDenyFloor?: unknown; classifierModel?: unknown; toggleShortcut?: unknown; audit?: unknown; notifyAllows?: unknown; classifierFallbackModel?: unknown; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown; codemodeNestedCalls?: unknown; auditRedactSecrets?: unknown; semanticAdjudication?: unknown };
 		try {
 			raw = JSON.parse(fs.readFileSync(p, "utf8")) as typeof raw;
 		} catch (err) {
@@ -434,6 +512,9 @@ function loadUserRules(): { rules: UserRules; skipped: string[]; shortcutWarning
 		if (nestedRaw !== undefined && nestedRaw !== "gate" && nestedRaw !== "rules-only") skipped.push(`codemodeNestedCalls: ${JSON.stringify(nestedRaw)}`);
 		// ADR-0007: audit redaction — non-boolean values skip into the one-shot warning channel, redaction stays on
 		if (raw.auditRedactSecrets !== undefined && typeof raw.auditRedactSecrets !== "boolean") skipped.push(`auditRedactSecrets: ${JSON.stringify(raw.auditRedactSecrets)}`);
+		// ADR-0009: tiered adjudication — every invalid field falls back to its default
+		// and joins the one-shot warning channel (invalid config never disables the gate)
+		const semantic = resolveSemanticAdjudication(raw.semanticAdjudication, skipped);
 		return {
 			rules: {
 				allow: compile(raw.allow),
@@ -450,6 +531,7 @@ function loadUserRules(): { rules: UserRules; skipped: string[]; shortcutWarning
 				classifierFallbackMode: fbModeRaw === undefined ? "enforce" : fbModeRaw === "enforce" ? "enforce" : "shadow", // invalid values land on the conservative shadow (standing invalid-config precedent); the key-less default is enforce
 				codemodeNestedCalls: nestedRaw === "rules-only" ? "rules-only" : "gate", // invalid values keep the safe default (gate)
 				auditRedactSecrets: raw.auditRedactSecrets !== false, // default on; only an explicit false disables (ADR-0007)
+				semanticAdjudication: semantic,
 			},
 			skipped,
 			shortcutWarning: shortcut.warning,
@@ -1808,6 +1890,34 @@ export interface AuditRecord {
 	demoted?: true;
 	/** #63/#67: second-layer outcome when the fallback was consulted. */
 	fallback?: FallbackAudit;
+	/** ADR-0009: Tier 1 (local Lancet-Nano) triage, when it ran for this call. */
+	tier1?: Tier1Audit;
+	/** ADR-0009: Tier 2 (model-registry adjudicator) outcome, when it ran. */
+	tier2?: Tier2Audit;
+	/** ADR-0009: the tiered block was configured but the tiered runtime was absent
+	 *  (single-file install) — the legacy classifier adjudicated instead. */
+	tieredFallback?: string;
+}
+
+/** ADR-0009 Tier 1 audit material. `riskLogit` is null when the local model
+ *  abstained (oversized/unsupported input) rather than scoring the command. */
+export interface Tier1Audit {
+	band: "not_flagged" | "review" | "risky";
+	pRisky: number;
+	riskLogit: number | null;
+	reason: string | null;
+	durationMs: number;
+}
+
+/** ADR-0009 Tier 2 audit material. `verdict` is the model's raw answer (null when
+ *  the call failed); the effective verdict lives on the record top level. */
+export interface Tier2Audit {
+	model: string;
+	role: string;
+	verdict: "allow" | "ask" | "deny" | null;
+	reason: string | null;
+	durationMs: number;
+	error: string | null;
 }
 
 // ============================================================================
@@ -2042,6 +2152,11 @@ export interface AdjudicateEnv {
 	host: PipelineHost;
 	signal?: AbortSignal;
 	getFallbackModel?: () => ResolvedLayer | null;
+	/** ADR-0009: Tier 1 seam. Absent → tiered mode cannot run Tier 1 (the pipeline
+	 *  escalates shell commands to Tier 2 with an explanatory review band). */
+	tier1?: Tier1Fn;
+	/** ADR-0009: resolves the Tier 2 adjudicator lazily (only once a call escalates). */
+	getAdjudicator?: () => { model: AdjudicatorModel; role: string } | null;
 }
 
 /** #67 (0.13, ADR-0005): the floor gates on protocol-native confidence — set only
@@ -2122,6 +2237,260 @@ async function runConfidenceCascade(
 	return { ...demotedMark, fb: { ...fb, effective: outcome.verdict }, effective: { verdict: outcome.verdict, reason: outcome.reason, source: "classifier" } };
 }
 
+/** Shell family for Tier 1 (ADR-0009). `exec` is pi's generic shell tool and runs
+ *  through the platform shell, so it is triaged as bash; `cmd` covers Windows cmd. */
+function shellKindFor(toolName: string): ShellKind | null {
+	switch (toolName) {
+		case "bash":
+		case "exec":
+			return "bash";
+		case "powershell":
+			return "powershell";
+		case "cmd":
+			return "cmd";
+		default:
+			return null;
+	}
+}
+
+type AuditRecordBuilder = (v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">, raw: ClassifierOutcome["auditRaw"] | null) => AuditRecord;
+
+/** The role-registry surface Tier 2 reads. OMP exposes `getModelForRole`; pi
+ *  1.0.0 does not, in which case the session model is the documented fallback. */
+export interface RoleRegistry {
+	getModelForRole?: (role: string) => unknown;
+	find?: (provider: string, id: string) => unknown;
+	hasConfiguredAuth?: (model: unknown) => boolean;
+}
+
+/**
+ * Resolve a model for the adjudicator role: the configured role → `smol` → the
+ * session model. Classifier-typed entries are skipped (Tier 2 needs a generative
+ * JSON answer); entries without configured auth are skipped. A role value may be a
+ * model object, a `{ model }` wrapper, or a `provider/id` string.
+ *
+ * Lives in the extension (not the tiered module) on purpose: role resolution is
+ * host adaptation, and keeping it here lets a bare single-file install load and
+ * fall back to the legacy classifier instead of failing at import time.
+ */
+export function resolveAdjudicatorModel(
+	registry: RoleRegistry | undefined,
+	sessionModel: AdjudicatorModel | null | undefined,
+	role: string,
+): { model: AdjudicatorModel; role: string } | null {
+	const normalize = (candidate: unknown): AdjudicatorModel | null => {
+		if (!candidate) return null;
+		if (typeof candidate === "string") {
+			const slash = candidate.indexOf("/");
+			if (slash <= 0 || !registry?.find) return null;
+			return normalize(registry.find(candidate.slice(0, slash), candidate.slice(slash + 1)));
+		}
+		if (typeof candidate !== "object") return null;
+		const obj = candidate as Record<string, unknown>;
+		const inner = obj.model && typeof obj.model === "object" ? (obj.model as Record<string, unknown>) : obj;
+		if (typeof inner.id !== "string" || !inner.id) return null;
+		return inner as AdjudicatorModel;
+	};
+	const usable = (model: AdjudicatorModel | null): model is AdjudicatorModel => {
+		if (!model || model.type === "classifier") return false;
+		if (registry?.hasConfiguredAuth) {
+			try {
+				return registry.hasConfiguredAuth(model);
+			} catch {
+				return false;
+			}
+		}
+		return true;
+	};
+	for (const name of [role, "smol"]) {
+		if (!registry?.getModelForRole) break;
+		try {
+			const model = normalize(registry.getModelForRole(name));
+			if (usable(model)) return { model, role: name };
+		} catch {
+			// A broken role lookup falls through to the next role, then the session model.
+		}
+	}
+	const session = normalize(sessionModel);
+	return usable(session) ? { model: session, role: "session" } : null;
+}
+
+/** The tiered runtime module, loaded once per extension instance. A bare
+ *  single-file install has no package tree, so the import may fail; the loader
+ *  then returns null and the caller falls back to the legacy classifier path.
+ *  Dynamic import is required here: the module specifier only resolves in the
+ *  packaged layout, and a static import would break extension loading itself. */
+let tieredRuntime: Promise<typeof import("../src/classifiers/tiered") | null> | undefined;
+function loadTieredRuntime(): Promise<typeof import("../src/classifiers/tiered") | null> {
+	tieredRuntime ??= import("../src/classifiers/tiered").catch(() => null);
+	return tieredRuntime;
+}
+
+/**
+ * ADR-0009: the tiered gray-zone path. Positioned exactly where the legacy
+ * classifier sat (after every deterministic layer), with two differences:
+ *   - shell commands are triaged locally first (Tier 1); a confident band settles
+ *     the call without network activity
+ *   - escalation goes to the model-registry adjudicator (Tier 2), whose failure
+ *     fails closed to ask (headless → deny)
+ * The record keeps `source: "classifier"` for tier-produced verdicts (the layer is
+ * the classifier layer; the tier detail lives in `tier1`/`tier2`), and
+ * `source: "fail-closed"` when Tier 2 was unavailable or failed.
+ */
+async function adjudicateTiered(
+	state: SessionState,
+	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string; parentToolCallId?: string },
+	env: AdjudicateEnv,
+	actionLine: string,
+	buildRecord: AuditRecordBuilder,
+	config: SemanticAdjudicationConfig,
+): Promise<Verdict> {
+	// `tier1Lancet.enabled: false` bypasses Tier 1 entirely (shell stays null so
+	// Tier 2 receives no triage block and its payload has no tier1 field).
+	const shell = config.tier1Lancet.enabled ? shellKindFor(call.toolName) : null;
+	const command = String(call.input.command ?? "");
+	const transcript = buildTranscript(env.host, actionLine);
+	const tieredRuntime = await loadTieredRuntime();
+	if (!tieredRuntime) return adjudicateLegacy(state, call, env, actionLine, buildRecord, "semanticAdjudication is configured but the tiered runtime is unavailable (single-file install) — legacy classifier path");
+	const outcome = await tieredRuntime.runTieredAdjudication({
+		toolName: call.toolName,
+		input: call.input,
+		shell,
+		command,
+		transcript,
+		denyPathsActive: state.userRules.denyPaths.length > 0,
+		tier1: config.tier1Lancet.enabled ? (env.tier1 ?? null) : null,
+		getTier2: () => env.getAdjudicator?.() ?? null,
+		// The adjudicator seam is structural (id + host extras); the host's model
+		// object is a superset. One named boundary cast, not a widening of either type.
+		complete: (model, context, options) =>
+			env.complete(model as unknown as NonNullable<ExtensionContext["model"]>, context, options),
+		host: env.host,
+		signal: env.signal,
+		config,
+	});
+
+	const appliedAskHeadless = !env.hasUI && outcome.verdict === "ask";
+	const auditSource: AuditRecord["source"] = outcome.source === "fail-closed" ? "fail-closed" : "model";
+	const record = buildRecord(
+		{ verdict: appliedAskHeadless ? "deny" : outcome.verdict, reason: outcome.reason, source: auditSource, degraded: appliedAskHeadless },
+		{
+			transcript: outcome.transcript ?? "",
+			rawResponse: outcome.rawResponse ?? "",
+			modelId: outcome.modelId ?? (outcome.tier1 ? "lancet-nano" : "?"),
+			thinking: null,
+		},
+	);
+	if (outcome.tier1) {
+		record.tier1 = {
+			band: outcome.tier1.band,
+			pRisky: Number(outcome.tier1.pRisky.toFixed(4)),
+			riskLogit: outcome.tier1.riskLogit,
+			reason: outcome.tier1.reason,
+			durationMs: Math.round(outcome.tier1.durationMs),
+		};
+	}
+	if (outcome.tier2) {
+		record.tier2 = {
+			model: outcome.tier2.modelId,
+			role: outcome.tier2Role ?? config.tier2Role,
+			verdict: outcome.tier2.ok ? outcome.tier2.verdict : null,
+			reason: outcome.tier2.ok ? outcome.tier2.reason : null,
+			durationMs: Math.round(outcome.tier2.durationMs),
+			error: outcome.tier2.ok ? null : outcome.tier2.error,
+		};
+	}
+	if (outcome.verdict === "ask" && env.hasUI) {
+		return { verdict: "ask", reason: outcome.reason, source: auditSource === "fail-closed" ? "fail-closed" : "classifier", degraded: false, ...(state.audit ? { pendingAudit: record } : {}) };
+	}
+	state.audit?.append(record);
+	if (outcome.verdict === "allow") return { verdict: "allow", reason: outcome.reason, source: "classifier", degraded: false };
+	if (outcome.verdict === "deny") return { verdict: "deny", reason: outcome.reason, source: "classifier", degraded: false };
+	// ask in a headless session degrades to deny (the standing ask-degradation rule)
+	return { verdict: "deny", reason: outcome.reason, source: auditSource === "fail-closed" ? "fail-closed" : "classifier", degraded: true };
+}
+
+
+/**
+ * The pre-ADR-0009 gray-zone path: one classifier layer (native classify() or a
+ * chat completion) plus the #63/#67 confidence cascade. Kept intact for two
+ * reasons: configurations without a `semanticAdjudication` block must behave
+ * byte-identically, and a single-file install that cannot load the tiered runtime
+ * degrades here instead of losing adjudication. `note` carries the degradation
+ * reason into the audit record when the tiered runtime was configured but absent.
+ */
+async function adjudicateLegacy(
+	state: SessionState,
+	call: { toolName: string; input: Record<string, unknown>; toolCallId?: string; parentToolCallId?: string },
+	env: AdjudicateEnv,
+	actionLine: string,
+	buildRecord: AuditRecordBuilder,
+	note: string | null,
+): Promise<Verdict> {
+	// ADR-0009 single-file fallback: stamp the degradation reason onto every record
+	// this path writes, so corpus analysis can separate it from ordinary legacy rows.
+	const record: AuditRecordBuilder = note
+		? (v, raw) => ({ ...buildRecord(v, raw), tieredFallback: note })
+		: buildRecord;
+	const resolved = env.getModel();
+	if (!resolved) {
+		const reason = "no classifier model available (fail-closed)";
+		// #67: a fail-closed origin cascades to the fallback if configured — under enforce
+		// the fallback adjudicates de novo (superseding the 0.10.0 ratchet decision);
+		// shadow records its opinion and the deny stands
+		const cascade = await runConfidenceCascade(state, env, null, { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine);
+		const eff = cascade.effective;
+		// #71: a fail-closed layer emits no negative verdict — its deny is a default, not
+		// a ruling. When an enforcing fallback rescues the call, the record's top level
+		// carries the applied verdict; a shadow rescue (no effective) keeps the deny.
+		const effAskHeadless = eff?.verdict === "ask" && !env.hasUI;
+		const fcRecord = record({ verdict: eff ? (effAskHeadless ? "deny" : eff.verdict) : "deny", reason: eff?.reason ?? reason, source: "fail-closed", degraded: effAskHeadless }, null);
+		if (cascade.fb) fcRecord.fallback = cascade.fb;
+		if (eff?.verdict === "ask" && env.hasUI) {
+			return { verdict: "ask", reason: eff.reason, source: eff.source, degraded: false, ...(state.audit ? { pendingAudit: fcRecord } : {}) };
+		}
+		state.audit?.append(fcRecord);
+		if (eff?.verdict === "allow") return { verdict: "allow", reason: eff.reason, source: "classifier", degraded: false };
+		if (eff) return { verdict: "deny", reason: eff.reason, source: eff.source, degraded: effAskHeadless };
+		return { verdict: "deny", reason, source: "fail-closed", degraded: false };
+	}
+
+	const outcome = await classifyWithModel(env, resolved, { actionLine, denyPathsActive: state.userRules.denyPaths.length > 0 });
+
+	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
+	// (the first layer produced no verdict)
+	const demotion = confidenceDemotion(outcome, state.userRules);
+	const cascade = demotion || outcome.source === "fail-closed"
+		? await runConfidenceCascade(state, env, demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null, demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine)
+		: {};
+	const effVerdict = cascade.effective?.verdict ?? outcome.verdict;
+	const effReason = cascade.effective?.reason ?? outcome.reason;
+	const effSource = cascade.effective?.source ?? "classifier";
+
+	// #62/#67: top-level keeps first-layer semantics (corpus comparability); the applied
+	// verdict lives in fallback.effective (enforce rows). Non-interactive asks of any
+	// origin — native, demoted, escalated — record as their effective deny, the
+	// pre-existing ask-degradation convention. #71 exception: a fail-closed first layer
+	// rescued by an enforcing fallback records the applied verdict at the top level —
+	// a fail-closed layer emits no negative verdict, so its default deny would distort
+	// deny-rate statistics (26 observed rows, 25 actually allowed); shadow rescues keep it.
+	const appliedAskHeadless = !env.hasUI && effVerdict === "ask";
+	const fcRescued = cascade.effective !== undefined && outcome.source === "fail-closed";
+	const grayRecord = record({ verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict, reason: fcRescued ? effReason : outcome.reason, source: outcome.source, degraded: appliedAskHeadless }, outcome.auditRaw ?? null);
+	if (cascade.demoted) grayRecord.demoted = true;
+	if (cascade.fb) grayRecord.fallback = cascade.fb;
+	// #62: an interactive ask defers the append to the handler finalize (ground truth);
+	// every other outcome appends immediately as before
+	if (effVerdict === "ask" && env.hasUI) {
+		return { verdict: "ask", reason: effReason, source: effSource, degraded: false, ...(state.audit ? { pendingAudit: grayRecord } : {}) };
+	}
+	state.audit?.append(grayRecord);
+	if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: effSource, degraded: false };
+	if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: false };
+	// ask:无 UI 降级为 deny(ask 降级,CONTEXT.md 词条)
+	return { verdict: "deny", reason: effReason, source: effSource, degraded: true };
+}
+
 /**
  * 判定管线(CONTEXT.md「判定管线」词条的实现):自保护 → 内置 floor → 用户 deny →
  * denyPaths ask → user allow → gray-zone classifier; ask degradation (no UI → deny)
@@ -2196,65 +2565,15 @@ export async function adjudicate(
 		return { verdict: "allow", reason, source: "rule", degraded: false };
 	}
 
-	// 灰区 → 分类器;无可用模型 → fail-closed
-
-	const resolved = env.getModel();
-	if (!resolved) {
-		const reason = "no classifier model available (fail-closed)";
-		// #67: a fail-closed origin cascades to the fallback if configured — under enforce
-		// the fallback adjudicates de novo (superseding the 0.10.0 ratchet decision);
-		// shadow records its opinion and the deny stands
-		const cascade = await runConfidenceCascade(state, env, null, { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine);
-		const eff = cascade.effective;
-		// #71: a fail-closed layer emits no negative verdict — its deny is a default, not
-		// a ruling. When an enforcing fallback rescues the call, the record's top level
-		// carries the applied verdict; a shadow rescue (no effective) keeps the deny.
-		const effAskHeadless = eff?.verdict === "ask" && !env.hasUI;
-		const fcRecord = buildRecord({ verdict: eff ? (effAskHeadless ? "deny" : eff.verdict) : "deny", reason: eff?.reason ?? reason, source: "fail-closed", degraded: effAskHeadless }, null);
-		if (cascade.fb) fcRecord.fallback = cascade.fb;
-		if (eff?.verdict === "ask" && env.hasUI) {
-			return { verdict: "ask", reason: eff.reason, source: eff.source, degraded: false, ...(state.audit ? { pendingAudit: fcRecord } : {}) };
-		}
-		state.audit?.append(fcRecord);
-		if (eff?.verdict === "allow") return { verdict: "allow", reason: eff.reason, source: "classifier", degraded: false };
-		if (eff) return { verdict: "deny", reason: eff.reason, source: eff.source, degraded: effAskHeadless };
-		return { verdict: "deny", reason, source: "fail-closed", degraded: false };
+	// ADR-0009: tiered semantic adjudication. The block's presence is the switch;
+	// shell tools run Tier 1 first, everything else goes straight to Tier 2. The
+	// legacy single-classifier path below stays byte-identical when the block is absent.
+	if (state.userRules.semanticAdjudication) {
+		return adjudicateTiered(state, call, env, actionLine, buildRecord, state.userRules.semanticAdjudication);
 	}
 
-	const outcome = await classifyWithModel(env, resolved, { actionLine, denyPathsActive: state.userRules.denyPaths.length > 0 });
-
-	// #67 cascade: a confidence-floor demotion, or a classifier fail-closed outcome
-	// (the first layer produced no verdict)
-	const demotion = confidenceDemotion(outcome, state.userRules);
-	const cascade = demotion || outcome.source === "fail-closed"
-		? await runConfidenceCascade(state, env, demotion ? { verdict: outcome.verdict, reason: outcome.reason } : null, demotion ? { kind: "demotion", confidence: demotion.confidence } : { kind: "fail-closed" }, state.userRules.denyPaths.length > 0, actionLine)
-		: {};
-	const effVerdict = cascade.effective?.verdict ?? outcome.verdict;
-	const effReason = cascade.effective?.reason ?? outcome.reason;
-	const effSource = cascade.effective?.source ?? "classifier";
-
-	// #62/#67: top-level keeps first-layer semantics (corpus comparability); the applied
-	// verdict lives in fallback.effective (enforce rows). Non-interactive asks of any
-	// origin — native, demoted, escalated — record as their effective deny, the
-	// pre-existing ask-degradation convention. #71 exception: a fail-closed first layer
-	// rescued by an enforcing fallback records the applied verdict at the top level —
-	// a fail-closed layer emits no negative verdict, so its default deny would distort
-	// deny-rate statistics (26 observed rows, 25 actually allowed); shadow rescues keep it.
-	const appliedAskHeadless = !env.hasUI && effVerdict === "ask";
-	const fcRescued = cascade.effective !== undefined && outcome.source === "fail-closed";
-	const grayRecord = buildRecord({ verdict: appliedAskHeadless ? "deny" : fcRescued ? effVerdict : outcome.verdict, reason: fcRescued ? effReason : outcome.reason, source: outcome.source, degraded: appliedAskHeadless }, outcome.auditRaw ?? null);
-	if (cascade.demoted) grayRecord.demoted = true;
-	if (cascade.fb) grayRecord.fallback = cascade.fb;
-	// #62: an interactive ask defers the append to the handler finalize (ground truth);
-	// every other outcome appends immediately as before
-	if (effVerdict === "ask" && env.hasUI) {
-		return { verdict: "ask", reason: effReason, source: effSource, degraded: false, ...(state.audit ? { pendingAudit: grayRecord } : {}) };
-	}
-	state.audit?.append(grayRecord);
-	if (effVerdict === "allow") return { verdict: "allow", reason: effReason, source: effSource, degraded: false };
-	if (effVerdict === "deny") return { verdict: "deny", reason: effReason, source: effSource, degraded: false };
-	// ask:无 UI 降级为 deny(ask 降级,CONTEXT.md 词条)
-	return { verdict: "deny", reason: effReason, source: effSource, degraded: true };
+	// 灰区 → 分类器(legacy single-classifier path, unchanged);无可用模型 → fail-closed
+	return adjudicateLegacy(state, call, env, actionLine, buildRecord, null);
 }
 
 // ============================================================================
@@ -2359,6 +2678,11 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	// + 重建自保护基线(ADR-0001:受保护文件的会话启动快照)
 	pi.on("session_start", async (_event, ctx) => {
 		const report = state.reset(ctx.cwd);
+		// ADR-0009: the Tier 1 engine and the one-shot warnings are session-scoped —
+		// a config edit between sessions (modelPath, enabled, tier2Role) must take effect.
+		lancetPromise = null;
+		warnedLancet = false;
+		warnedAdjudicator = false;
 		integrity.startSession();
 		state.audit?.prune(); // #54: converge to the AUDIT_KEEP_SESSIONS most recent files at session start
 		if (report.skipped.length > 0) {
@@ -2389,6 +2713,13 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	const nestedPolicyHint = () => (state.userRules.codemodeNestedCalls === "rules-only" ? "\nnested calls: rules-only (deterministic layers only — the gray zone passes)" : "");
 	/** Status line audit hint (#54): shown only while the sink is active */
 	const auditHint = () => (state.audit ? `\naudit: on → ${state.audit.dir}` : "");
+	/** ADR-0009: tiered adjudication status line — shown only when the block is configured */
+	const tieredHint = () => {
+		const config = state.userRules.semanticAdjudication;
+		if (!config) return "";
+		const tier1 = config.tier1Lancet.enabled ? `Tier 1 Lancet-Nano (${config.tier1Lancet.modelPath}, risky ≥ ${(config.tier1Lancet.riskyThreshold * 100).toFixed(0)}% → ${config.tier1Lancet.riskyAction})` : "Tier 1 off";
+		return `\nsemantic adjudication: ${tier1} → Tier 2 role "${config.tier2Role}" (${config.tier2TimeoutMs}ms)`;
+	};
 	/** Status line cascade hint (#63/#67): shown while the floor or the fallback is configured */
 	const fallbackHint = () => {
 		if (state.userRules.classifierMinConfidence === null && !state.userRules.classifierFallbackModel) return "";
@@ -2404,7 +2735,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			const arg = args.trim().toLowerCase();
 			// 裸调用:只读状态展示,无副作用
 			if (arg === "") {
-				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}\n${denyPathsHint()}${nestedPolicyHint()}${auditHint()}${fallbackHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
+				ctx.ui.notify(`${enabled ? "🛡️ Auto Mode: on" : "Auto Mode: off"}\n${denyPathsHint()}${nestedPolicyHint()}${auditHint()}${fallbackHint()}${tieredHint()}\nUsage: /automode on|off${toggleHint()}`, "info");
 			return;
 			}
 			// 幂等设定:与现值相同不翻转,仅确认
@@ -2578,6 +2909,61 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return null;
 	}
 
+	// ── ADR-0009: tiered adjudication runtime ────────────────────────────────
+	/** One-shot latches: a broken bundle or an absent adjudicator role must warn
+	 *  once per session, not once per gray-zone call. */
+	let warnedLancet = false;
+	let warnedAdjudicator = false;
+	let lancetPromise: Promise<Tier1Fn | null> | null = null;
+
+	/** Load the local Lancet bundle lazily (first shell gray-zone call only) and
+	 *  keep the engine for the session. A load failure warns once and returns null;
+	 *  the tiered pipeline then escalates shell calls to Tier 2 (review band). */
+	function tier1For(ctx: ExtensionContext): Promise<Tier1Fn | null> {
+		const config = state.userRules.semanticAdjudication;
+		if (!config || !config.tier1Lancet.enabled) return Promise.resolve(null);
+		if (!lancetPromise) {
+			lancetPromise = (async () => {
+				try {
+					// Dynamic on purpose: the module pulls in the native onnxruntime-node
+					// binding; a session that never reaches a shell gray-zone call must not
+					// pay that load (or fail on a host without the binary).
+					const { LancetEngine } = await import("../src/classifiers/lancet");
+					const engine = await LancetEngine.load(config.tier1Lancet.modelPath, 2);
+					return (command: string, shell: ShellKind) => engine.triage(command, shell, config.tier1Lancet.riskyThreshold);
+				} catch (error) {
+					if (!warnedLancet) {
+						warnedLancet = true;
+						ctx.ui.notify(
+							`pi-verdict: Tier 1 Lancet-Nano unavailable (${error instanceof Error ? error.message : String(error)}) — shell commands escalate to the model adjudicator; install the bundle with \`bun run setup:lancet\``,
+							"warning",
+						);
+					}
+					return null;
+				}
+			})();
+		}
+		return lancetPromise;
+	}
+
+	/** Resolve the Tier 2 model lazily (only on escalation): the configured role,
+	 *  then `smol`, then the session model. Absence warns once; the pipeline then
+	 *  fails closed to ask (headless → deny). */
+	function resolveAdjudicator(ctx: ExtensionContext): { model: AdjudicatorModel; role: string } | null {
+		const config = state.userRules.semanticAdjudication;
+		if (!config) return null;
+		const registry = ctx.modelRegistry as unknown as RoleRegistry;
+		const resolved = resolveAdjudicatorModel(registry, ctx.model as AdjudicatorModel | undefined, config.tier2Role);
+		if (!resolved && !warnedAdjudicator) {
+			warnedAdjudicator = true;
+			ctx.ui.notify(
+				`pi-verdict: no adjudicator model resolved (role "${config.tier2Role}" → "smol" → session model) — escalated calls fail closed to ask`,
+				"warning",
+			);
+		}
+		return resolved;
+	}
+
 	function describeAction(toolName: string, input: Record<string, unknown>): string {
 		return toolCallLine(toolName, input);
 	}
@@ -2628,6 +3014,18 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			host: ctx.sessionManager,
 			signal: ctx.signal,
 			getFallbackModel: () => resolveFallbackClassifier(ctx),
+			// ADR-0009: lazily resolved only when the tiered block is active and the
+			// call actually needs the tier (Tier 1 load / Tier 2 escalation).
+			...(state.userRules.semanticAdjudication
+				? {
+						tier1: async (command: string, shell: ShellKind) => {
+							const fn = await tier1For(ctx);
+							if (!fn) return { band: "review" as const, pRisky: 0.5, riskLogit: null, reason: "tier1 unavailable (bundle not installed)", durationMs: 0 };
+							return fn(command, shell);
+						},
+						getAdjudicator: () => resolveAdjudicator(ctx),
+					}
+				: {}),
 		});
 		const auditWarning = state.audit?.drainWarning(); // #54: fail-soft one-shot warning
 		if (auditWarning) ctx.ui.notify(`pi-verdict: ${auditWarning}`, "warning");

@@ -24,7 +24,17 @@ Everything the gate reads from disk lives in `<agentDir>/config/pi-verdict.json`
   ],
   "builtinDenyFloor": true,
   "classifierModel": null,
-  "toggleShortcut": "ctrl+shift+a"
+  "toggleShortcut": "ctrl+shift+a",
+  "semanticAdjudication": {
+    "tier1Lancet": {
+      "enabled": true,
+      "modelPath": "~/.cache/pi/lancet-nano",
+      "riskyThreshold": 0.85,
+      "riskyAction": "ask"
+    },
+    "tier2Role": "adjudicator",
+    "tier2TimeoutMs": 5000
+  }
 }
 ```
 
@@ -43,7 +53,53 @@ Everything the gate reads from disk lives in `<agentDir>/config/pi-verdict.json`
 - `classifierMinConfidence: 0–100` sets the **confidence floor** — the minimum confidence at which the first layer may adjudicate on its own ([ADR-0004](adr/0004-classifier-fallback-cascade.md), #67). A native-classifier verdict with confidence strictly below the floor is **demoted**: the call cascades to the second layer if `classifierFallbackModel` is configured, otherwise it is asked of you directly (non-interactive degrades to deny; any verdict — allow, ask, deny — demotes). At or above the floor the first layer is fully autonomous and nothing extra runs. The floor works standalone — it does not require a second layer. The rendered confidence floors rather than rounds (a true 49.6% renders 49% and cannot slip past a 50 floor), and confidence is hard-required by the classify() contract (drift fails closed). The floor applies to native classifier models only, keyed on the presence of protocol-native confidence (ADR-0005): a chat/LLM classifier never demotes — an LLM reason that happens to match the historical jev confidence format included — and a one-time neutral warning tells you when the effective classifier (configured or self-reflected) is a chat model. `null` (the default) = off; invalid values skip into the one-shot warning channel. The old key name `classifierFallbackConfidence` (0.10.0) warns as renamed and is ignored.
 - `classifierFallbackModel: "provider/model-id"` adds an opt-in **second-layer classifier** consulted on exactly two occasions: a **demotion** (confidence below `classifierMinConfidence`) and a **fail-closed** first layer. It gets its own 15s-per-attempt budget (the two-tier retry can double it, mirroring the first layer's per-attempt 25s) and, unlike a native first layer, receives the denyPaths existence hint. Resolution is config-only and never falls back to the session model; an unresolvable model warns once per session (a jev spec gets wording that names the two real causes: a host without native classifier support, or a missing credential for the transport). High-confidence asks no longer consult it — a confident ask goes straight to you. A native-classifier second layer adjudicates without a confidence gate of its own — the floor is a first-layer rule, so the cascade never recurses.
 - `classifierFallbackMode` (default `"enforce"` since 0.12.0) — `"shadow"` keeps the second layer **recording its opinion only** (audit `fallback` sub-object + `/automode` counters: `triggered · agreed · would-overrule · would-rescue-allow · errored`) and never changes any verdict: a demoted call is asked of you, a fail-closed deny stands. `"enforce"` — the second layer **adjudicates de novo**, with one carve-out family (#71): a demoted first-layer **deny or ask** that the second layer would allow is asked of you instead (never an automatic allow; headless degrades to deny). A **fail-closed** first layer keeps full de novo authority — it emitted no negative verdict, so a fallback allow is a first ruling and stands automatically. A failed or unresolvable fallback on a cascaded call falls to you as well — the tier that was to adjudicate is down (headless → deny, one-time warning). Audit reading: the top level keeps **first-layer semantics** (records of non-interactive asks — native, demoted, escalated — carry their effective deny, per the standing convention), `demoted: true` marks floor fires, and the applied verdict lives in `fallback.effective` (enforce rows, failure rows carry the `"ask"` you got) — except enforced **fail-closed rescues** (#71), whose top-level verdict is the applied ruling (a fail-closed layer's deny was only the default, never a judgment). An explicit `"shadow"` is the observation mode: flip to `"enforce"` (or drop the key) when the shadow data earns the layer your trust ([criteria](adr/0004-classifier-fallback-cascade.md)); config-only, new-session semantics.
+- `semanticAdjudication` (optional, [ADR-0009](adr/0009-tiered-semantic-adjudication.md)) — turns the gray zone into a two-tier pipeline: local LANCET-Nano triage of shell commands (Tier 1) and a model-registry adjudicator for what it escalates (Tier 2). Full reference and bundle setup: [Tiered semantic adjudication](#tiered-semantic-adjudication-adr-0009). Omit the block to keep the single-classifier path unchanged.
 - `codemodeNestedCalls` (default `"gate"`, [ADR-0006](adr/0006-codemode-nested-calls-policy.md)) — how nested calls (issued by codemode scripts, `parentToolCallId` set) adjudicate. `"gate"`: identically to direct calls, every layer. `"rules-only"`: nested calls keep every deterministic layer — self-protection, the built-in deny floor, your allow/deny rules, denyPaths with its terminal ask — and skip only the classifier + confidence cascade; the gray zone passes (audited as `source: rule` + `policy: rules-only` when audit is on). The trade-off, stated rather than papered over: rule-passing actions the classifier would have caught now pass — e.g. a nested `bash head ~/.ssh/config` passes unless `~/.ssh` is a denyPaths declaration (bash token extraction then asks). Motivation: serial gray-zone adjudication of script batches — measured ~350ms/call, so 50 nested calls ≈ 17.5s and the 256-call cap ≈ 90s of pure gating latency. Direct calls are unaffected in both modes; audit records gain `toolCallId`/`parentToolCallId` attribution either way.
+
+## Tiered semantic adjudication ([ADR-0009](adr/0009-tiered-semantic-adjudication.md))
+
+The optional `semanticAdjudication` block replaces the gray-zone classifier call with two tiers. **Omitting the block keeps the single-classifier path byte-identical** — the block is the switch, not a boolean inside it.
+
+```json
+{
+  "semanticAdjudication": {
+    "tier1Lancet": {
+      "enabled": true,
+      "modelPath": "~/.cache/pi/lancet-nano",
+      "riskyThreshold": 0.85,
+      "riskyAction": "ask"
+    },
+    "tier2Role": "adjudicator",
+    "tier2TimeoutMs": 5000
+  }
+}
+```
+
+- **`tier1Lancet`** — local triage of shell commands (`bash`, `powershell`, `cmd`; pi's `exec` is treated as bash). The model is [LANCET-Nano](https://huggingface.co/fingerthief/lancet-nano) v0.4.3: a CodeT5+ 220M encoder exported as a 111 MB INT8 ONNX encoder plus a float head, run on CPU through `onnxruntime-node` with no network access.
+  - `not_flagged` → **allow immediately** (measured ~10 ms median warm on CPU).
+  - `risky` → **ask** by default; `"riskyAction": "block"` makes it a deterministic **deny**.
+  - `review`, or any abstention (more than 512 tokens, more than 8,192 bytes, unsupported shell, tokenizer/inference failure, missing bundle) → escalate to Tier 2. A long command is **never truncated** — the truncated tail could hide the risky part.
+  - `riskyThreshold` (0–1, default `0.85`) is a **calibrated probability**; it is mapped back onto the model's logit scale, so banding stays exact. The shipped model boundary is `0.9912`; lower values make Tier 1 escalate more often (fewer local allows), higher values make it decide more locally. `not_flagged` is not a safety guarantee — the deterministic floor still runs first, and Tier 2 only sees what Tier 1 escalates.
+  - `enabled: false` skips Tier 1 entirely: shell commands go straight to Tier 2 and its payload carries no triage block.
+  - `modelPath` is the verified bundle directory (`~` expanded). Install it with `bun run setup:lancet` (see below).
+- **`tier2Role`** (default `"adjudicator"`) — the role looked up through the host registry: `getModelForRole(role)` → `"smol"` → the session model. pi 1.0.0 has no role API, so the session model is the effective fallback there; OMP hosts resolve the configured role first. Classifier-typed entries are skipped (Tier 2 needs a generative JSON answer), as are entries without configured auth. Resolution is lazy — a Tier 1 `not_flagged` call never resolves a model or emits its warning.
+- **`tier2TimeoutMs`** (default `5000`, 100–60000) — the hard ceiling for one Tier 2 call, enforced with `Promise.race` even if the provider ignores abort signals. On expiry the call fails closed.
+- **Tier 2 verdict mapping**: `allow` → allow; `ask` and `deny` both → **ask**. A model may not auto-deny at this tier — automatic denial belongs to Tier 1's `risky` band, and an ask costs one keypress while a wrong deny is invisible. Headless sessions degrade the ask to deny.
+- **Fail-closed**: no resolved model, transport error, timeout, or unparseable/malformed JSON → ask (headless → deny), with `source: "fail-closed"` on the verdict and the audit record. The reason names the failure; it never silently allows.
+- **Non-shell tools** (MCP/custom tools, file tools that reach the gray zone) bypass Tier 1 and go straight to Tier 2 with the session transcript.
+- **Audit**: gray-zone records gain optional `tier1` (`band`, `pRisky`, `riskLogit`, `reason`, `durationMs`) and `tier2` (`model`, `role`, `verdict`, `reason`, `durationMs`, `error`) sub-objects. Top-level `source` stays `"model"` for tier-produced verdicts and `"fail-closed"` for Tier 2 failures, so existing corpus queries keep working.
+- **Single-file installs**: the tiered runtime lives under `src/classifiers/`. A bare copied `pi-verdict.ts` cannot load it; the gate then falls back to the legacy classifier path and stamps `tieredFallback` on the audit record — it never silently allows.
+
+### Installing the Tier 1 bundle
+
+```bash
+bun run setup:lancet            # ~/.cache/pi/lancet-nano (pinned v0.4.3)
+bun run setup:lancet --check    # verify an existing bundle, no network
+bun run setup:lancet --dir DIR  # custom location (must match tier1Lancet.modelPath)
+bun run setup:lancet --force    # re-download even when the bundle verifies
+```
+
+Integrity is checked twice: `export.json` against the digest published with the release, then every model file against the digests recorded in `export.json`; the tokenizer is cross-checked against `@xenova/transformers`. The runtime repeats the per-file check on every load, so a bundle tampered with after setup refuses to load (Tier 1 escalates with a one-shot warning). A missing bundle is not an error state — shell commands simply go to Tier 2.
 
 Built-in (keyless) behaviors worth knowing about, both statements about the gate's relationship to pi's own surfaces rather than user policy: **headless subagent-artifacts writes pass** ([ADR-0008](adr/0008-agentdir-sessions-write-exemption.md)) — a no-UI session's `write`/`edit` under `<agentDir>/sessions/**/subagent-artifacts/` (where pi's subagent tooling writes its working artifacts) returns a deterministic allow; interactive sessions keep normal adjudication (the gate never waives an ask a human could perform), your `deny` rules and denyPaths declarations still outrank it, reads and bash are untouched, and a symlink resolving outside earns no exemption. **verdicts reads are denied** (#54, see `audit` above) — records contain untrusted raw model output.
 

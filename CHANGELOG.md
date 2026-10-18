@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/lang/zh-CN/).
 
+## [Unreleased]
+
+### Added
+
+- **Tiered semantic adjudication** ([ADR-0009](docs/adr/0009-tiered-semantic-adjudication.md)): the gray zone can now run as two tiers instead of one classifier call. **Tier 1** triages shell commands locally with [LANCET-Nano](https://huggingface.co/fingerthief/lancet-nano) v0.4.3 (CodeT5+ 220M INT8 ONNX, CPU, no network): `not_flagged` → allow immediately (measured median 10.1–10.6 ms, p90 ~15.3 ms warm), `risky` → ask (default) or deny via `riskyAction: "block"`, `review`/abstention/oversized input → **Tier 2**. Tier 2 resolves an adjudicator from the host model registry (`getModelForRole("adjudicator")` → `"smol"` → session model; pi 1.0.0 has no role API, so the session model is the documented fallback), sends it the tool call, the condensed transcript and Tier 1's band, and requires strict JSON `{"verdict","reason"}`. Tier 2 `allow` passes; `ask`/`deny` both go to a human (a model may not auto-deny at this tier); any failure — no model, transport error, 5 s timeout, unparseable output — fails closed to ask (headless → deny). Opt-in via a `semanticAdjudication` block; absent, behavior is byte-identical to 0.15.
+- `scripts/setup-lancet.ts` (`bun run setup:lancet`): downloads the pinned LANCET-Nano bundle into `~/.cache/pi/lancet-nano`, verifies `export.json` against the release-manifest digest and every model file against `export.json`, cross-checks the tokenizer against `@xenova/transformers`, and supports `--check` (verify only) / `--force` / `--dir`. The runtime re-verifies every file on load; a tampered bundle refuses to load and Tier 1 escalates.
+- Dependency-free byte-level BPE tokenizer (`src/classifiers/tokenizer.ts`) reproducing the reference CodeT5 tokenizer (`vocab.json` + `merges.txt`); ids are pinned against the Python reference in tests.
+- Audit records gain optional `tier1` and `tier2` sub-objects (band, calibrated probability, risk logit, model/role, verdict, duration, error); top-level `source` stays `"model"`/`"fail-closed"` so existing corpus tooling keeps working.
+- `/automode` status shows the active tiers when the block is configured.
+
+### Changed
+
+- Gray-zone shell commands in tiered mode no longer consult a remote classifier unless Tier 1 escalates. Non-shell tools (MCP/custom) go straight to Tier 2.
+- The tiered runtime is loaded lazily; a bare single-file install that configures the block but lacks the package tree falls back to the legacy classifier and records `tieredFallback` on the audit record.
+
+### Internal
+
+- `npm run build` / `bun run build` is an alias for the typecheck (the project is source-distributed; there is no emit step), so the acceptance-criteria command exists as written.
+- New dependencies: `onnxruntime-node` (CPU execution provider) and `@xenova/transformers` (setup-time tokenizer cross-check only). `tests/tiered.test.ts` covers tokenizer parity, banding, window contract, Tier 2 parsing/resolution/failure modes, config validation, the `adjudicate()` integration and the `/automode` status line; ONNX inference tests run when `PI_VERDICT_LANCET_DIR` points at a verified bundle (JS↔Python cross-validation: 36/36 bands, max risk-logit delta 4.7e-5).
+
 ## [0.15.0] - 2026-10-06
 
 ### Added

@@ -7,6 +7,8 @@
 	"main": "extensions/pi-verdict.ts",
 	"files": [
 		"extensions/pi-verdict.ts",
+		"src/classifiers/*.ts",
+		"scripts/setup-lancet.ts",
 		"README.md",
 		"README.zh-CN.md",
 		"LICENSE"
@@ -44,7 +46,9 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit -p tsconfig.json",
-		"test": "bun test"
+		"test": "bun test",
+		"setup:lancet": "bun scripts/setup-lancet.ts",
+		"build": "tsc --noEmit -p tsconfig.json"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.99.0"
@@ -58,5 +62,9 @@
 		"@earendil-works/pi-coding-agent": "1.0.0",
 		"@types/node": "^26.3.0",
 		"typescript": "^7.0.2"
+	},
+	"dependencies": {
+		"@xenova/transformers": "^2.17.2",
+		"onnxruntime-node": "^1.30.0"
 	}
 }

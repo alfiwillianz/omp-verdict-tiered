@@ -10,5 +10,5 @@
       "@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"]
     }
   },
-  "include": ["extensions/**/*.ts"]
+  "include": ["extensions/**/*.ts", "src/**/*.ts", "scripts/**/*.ts"]
 }

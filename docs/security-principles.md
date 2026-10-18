@@ -20,7 +20,7 @@ Some security properties must never depend on an LLM. The built-in deny floor (b
 
 ### 3. The classifier judges semantics, not syntax
 
-Coding agents routinely generate long pipelines, heredocs, embedded interpreters, and command substitutions. Regex floors and allowlists cannot realistically classify such payloads, so: **deterministic rules establish the floor; the classifier handles the remaining semantic ambiguity.** A long read-only pipeline may be complex but low-impact; a short heredoc may be syntactically simple but arbitrarily destructive. Decisions focus on what an action *does*, not how it is spelled.
+Coding agents routinely generate long pipelines, heredocs, embedded interpreters, and command substitutions. Regex floors and allowlists cannot realistically classify such payloads, so: **deterministic rules establish the floor; the classifier handles the remaining semantic ambiguity.** With tiered adjudication ([ADR-0009](./adr/0009-tiered-semantic-adjudication.md)), the first semantic pass is local and context-free (LANCET-Nano); only calls it will not clear — and every non-shell call — reach the model that sees the session. A long read-only pipeline may be complex but low-impact; a short heredoc may be syntactically simple but arbitrarily destructive. Decisions focus on what an action *does*, not how it is spelled.
 
 Known limitation, stated honestly: bash-side path extraction is token-level — command substitution and base64-embedded paths produce no floor hit and fall to the classifier's vigilance ([ADR-0002](./adr/0002-deny-paths-deterministic-ask.md)).
 
@@ -30,7 +30,7 @@ A long command is not automatically dangerous, and a short one is not automatica
 
 ### 5. Verdicts are informed judgments, not proofs
 
-A classifier `allow` means "consistent with policy and user intent as far as the model can tell" — it does **not** mean "proven incapable of causing harm." That distinction is fundamental to the security model and to why the deterministic floor exists at all.
+A classifier `allow` means "consistent with policy and user intent as far as the model can tell" — it does **not** mean "proven incapable of causing harm." The same applies to Tier 1's `not_flagged`: a local model that saw only the command string found no risk, which is not a proof of safety. That distinction is fundamental to the security model and to why the deterministic floor exists at all.
 
 ### 6. Minimize the classifier's trusted input
 

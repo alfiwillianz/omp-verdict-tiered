@@ -6,3 +6,6 @@
 .baoyu-skills/
 .scratch/
 image-cards/
+
+# dependencies
+node_modules/

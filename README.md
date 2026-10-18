@@ -8,7 +8,7 @@
 
 **pi-verdict is a minimal permission gate for [pi](https://pi.dev), inspired by Claude Code's auto mode: every tool call gets checked before it runs — allow, deny, or ask you first.**
 
-- Minimal — a ~2k-line single-file core (the classifier rides pi's native `classify()` since 0.13)
+- Minimal — one readable core file (the classifier rides pi's native `classify()` since 0.13; tiered adjudication is an optional module)
 - Built-in danger rules and your own allow/deny rules settle the clear cases first, at zero latency
 - Everything else goes to a model classifier that sees the conversation context
 - Any uncertainty or failure fails closed; nothing ever runs silently
@@ -114,7 +114,17 @@ pi-verdict 0.13+ requires **pi ≥ 0.99** and runs on pi only (native classifier
   "notifyAllows": false,
   "classifierMinConfidence": null,
   "classifierFallbackModel": null,
-  "classifierFallbackMode": "enforce"
+  "classifierFallbackMode": "enforce",
+  "semanticAdjudication": {
+    "tier1Lancet": {
+      "enabled": true,
+      "modelPath": "~/.cache/pi/lancet-nano",
+      "riskyThreshold": 0.85,
+      "riskyAction": "ask"
+    },
+    "tier2Role": "adjudicator",
+    "tier2TimeoutMs": 5000
+  }
 }
 ```
 
@@ -124,11 +134,22 @@ pi-verdict 0.13+ requires **pi ≥ 0.99** and runs on pi only (native classifier
 - `builtinDenyFloor: false` turns off the built-in danger/path floor (your risk; the self-protection layer below always stays on)
 - `classifierModel` pins the classifier model, e.g. `"zai/glm-5.3-flash:low"` (thinking suffix supported; default: session model with thinking off)
 - `classifierModel: "typesafe/jev-latest"` opts into the **native jev classifier** — one structured `classify()` call per gray-zone verdict via pi's built-in classifier catalog (TypeSafe direct, or Jev on OpenRouter/OpenCode/Cloudflare/Vercel); see [ADR-0005](docs/adr/0005-native-classifier-migration.md)
+- `semanticAdjudication` opts into **tiered adjudication** ([ADR-0009](docs/adr/0009-tiered-semantic-adjudication.md)): shell commands are triaged locally first by **Tier 1** — LANCET-Nano, a 111 MB INT8 ONNX model on CPU, no network ([setup](#tier-1-lancet-nano-setup)). `not_flagged` allows immediately (~10 ms), `risky` asks (or denies with `riskyAction: "block"`), `review`/oversized input escalates to **Tier 2**, a model resolved from the host registry (`tier2Role`: `"adjudicator"` → `"smol"` → session model) that sees the tool call, the conversation and Tier 1's band. Tier 2 `allow` passes; `ask`/`deny` both go to you; any failure (no model, network, 5 s timeout, bad JSON) fails closed to ask (headless → deny). Omit the block and behavior is exactly 0.15's single-classifier path. Non-shell tools bypass Tier 1 and go straight to Tier 2.
 - `audit: true` records every **gray-zone adjudication** (the full transcript sent to the classifier, its raw response, the parsed verdict) as JSONL under `~/.pi/agent/verdicts/<sessionId>.jsonl` — one file per session, the 20 most recent kept. Interactive asks also record your answer (`userAnswer` ground truth, written after the confirm resolves), and protected-path asks are recorded too (#62); rule allow/deny stays unaudited. Local-only and full-fidelity (protected-path plaintext may appear — it never leaves your machine; [ADR-0002](docs/adr/0002-deny-paths-deterministic-ask.md) boundary note); secret-shaped text is redacted on append (`<redacted:type#fingerprint>`, deterministic so cross-record tracing survives — `auditRedactSecrets: false` opts out; [ADR-0007](docs/adr/0007-audit-secret-redaction.md)); the agent can neither read nor write the directory. `/automode` shows the audit state and path while on
 - `notifyAllows: true` notifies on every **classifier allow** (reason + action line — e.g. jev's probability breakdown); default `false` keeps passes silent. Mechanical passes (your own allow rules, protected-path confirms) never notify; with both switches on the notification appears once
 - `classifierMinConfidence` (optional, [ADR-0004](docs/adr/0004-classifier-fallback-cascade.md)) sets the **confidence floor**: a native-classifier verdict below it is demoted — cascaded to `classifierFallbackModel` if set (`enforce`, the default = the second layer adjudicates; a demoted **deny or ask** can never be auto-relaxed to an allow; a fail-closed layer emitted no verdict, so its rescue stands; `shadow` = records its opinion only and you are asked — `/automode` hints the activation switch), otherwise asked of you directly. At/above the floor the first layer is autonomous. The floor applies to native classifier models only (protocol-native confidence) — with a chat/LLM classifier it is inert, and a one-time warning says so. A natural pairing: jev first + a haiku/flash-class fallback
 
 No built-in allowlist — every "always allow" claim is yours ([why](docs/configuration.md#why-no-built-in-allowlist)). Full reference: [docs/configuration.md](docs/configuration.md).
+
+### Tier 1 Lancet-Nano setup
+
+```bash
+bun run setup:lancet            # ~/.cache/pi/lancet-nano (pinned v0.4.3, hash-verified)
+bun run setup:lancet --check    # verify an existing bundle, no network
+bun run setup:lancet --dir DIR  # custom location (must match tier1Lancet.modelPath)
+```
+
+The setup verifies `export.json` against the release manifest digest, every model file against `export.json`, and the tokenizer against the reference implementation. The runtime repeats the file check on every load — a tampered or missing bundle never produces a `not_flagged`; Tier 1 escalates with a one-shot warning. With the block configured but the bundle absent, shell commands go to Tier 2.
 
 ### Native jev classifier ([ADR-0005](docs/adr/0005-native-classifier-migration.md))
 
@@ -173,14 +194,14 @@ The gate's own files — the config and the installed extension copy — are **u
 
 | | three-state verdict | classifier sees context | fail direction | runtime deps |
 |---|---|---|---|---|
-| **pi-verdict** | ✅ allow / ask / deny | ✅ recent user intent + tool calls | **closed** (errors/timeout/bad output → deny; headless ask → deny) | **0** |
+| **pi-verdict** | ✅ allow / ask / deny | ✅ recent user intent + tool calls | **closed** (errors/timeout/bad output → deny; headless ask → deny; Tier 2 failure → ask) | **0** core (opt-in tiered runtime adds ONNX) |
 | [@czottmann/pi-automode](https://github.com/czottmann/pi-automode) | rules 3-state, classifier 2-state | ✅ budgeted transcript | closed | 1 |
 | [@zhushanwen/pi-permission](https://www.npmjs.com/package/@zhushanwen/pi-permission) | ✅ (outcome) | ❌ single-turn, no context | closed (→ ask) | 4 |
 | [@gotgenes/pi-permission-system](https://github.com/gotgenes/pi-packages) | ✅ deterministic only | — (no built-in classifier) | closed | 3 |
 
 Full landscape: [`research/pi-permission-landscape.md`](research/pi-permission-landscape.md) · convergence analysis with the closest architectural relative: [`research/pi-automode-convergence.md`](research/pi-automode-convergence.md).
 
-Honest framing: pi-automode and pi-verdict have **converged on the same architecture** (deny floor → user rules → classifier, fail-closed — see the convergence analysis). What remains distinct here: a classifier that can say `ask` (runtime human-in-the-loop, not just rule-declared), a built-in floor you can turn off (`builtinDenyFloor` — user sovereignty), a self-protection layer that no config can turn off ([ADR-0001](docs/adr/0001-self-protection-layer.md) — gate integrity), a zero-dependency single file ([one readable file](extensions/pi-verdict.ts), still one file on purpose), and the measurement habit — every design decision in this repo is backed by shipped research.
+Honest framing: pi-automode and pi-verdict have **converged on the same architecture** (deny floor → user rules → classifier, fail-closed — see the convergence analysis). What remains distinct here: a classifier that can say `ask` (runtime human-in-the-loop, not just rule-declared), a built-in floor you can turn off (`builtinDenyFloor` — user sovereignty), a self-protection layer that no config can turn off ([ADR-0001](docs/adr/0001-self-protection-layer.md) — gate integrity), a dependency-free core ([one readable file](extensions/pi-verdict.ts); the optional tiered runtime is a separate opt-in module), and the measurement habit — every design decision in this repo is backed by shipped research.
 
 ## Pipeline
 
@@ -210,13 +231,18 @@ tool_call
   │       claim is yours to make (the one built-in allow is pi's own
   │       subagent-artifacts subtree, headless-only, ADR-0008)
   │
-  ├─ 2. Gray zone → nested-call policy, then model classifier
+  ├─ 2. Gray zone → nested-call policy, then semantic adjudication
   │     ├─ nested call (codemode) + codemodeNestedCalls=rules-only → pass;
   │     │   deterministic layers above already ran (ADR-0006)
-  │     ├─ gate (default, or a direct call) → classifier: native classify()
-  │     │   (choice + probabilities + confidence; tag-free reason, full contract
-  │     │   line in the audit rawResponse) or, on the chat path (session-model
-  │     │   self-reflection), <verdict>…</verdict> prefix-anchored free text
+  │     ├─ default: one classifier — native classify() (choice + probabilities +
+  │     │   confidence; tag-free reason, full contract line in the audit
+  │     │   rawResponse) or, on the chat path (session-model self-reflection),
+  │     │   <verdict>…</verdict> prefix-anchored free text
+  │     └─ tiered (ADR-0009, opt-in semanticAdjudication block):
+  │           shell → Tier 1 LANCET-Nano (local, ~10 ms):
+  │             not_flagged → allow; risky → ask (or deny); review/long → Tier 2
+  │           all tools → Tier 2 model-registry adjudicator (role → smol → session):
+  │             strict JSON; allow passes, ask/deny → human; failure → ask
   │
   └─ 3. Three-state adjudication
         ├─ allow → pass
@@ -225,7 +251,7 @@ tool_call
 
 ```
 
-**fail-closed**: classifier exception / timeout (25s) / contract violation → deny. Never silently allow.
+**fail-closed**: classifier exception / timeout (25s) / contract violation → deny; in tiered mode, Tier 2 failure (no model, network, 5s timeout, bad JSON) → ask (headless → deny). Never silently allow.
 
 ## Evidence-driven, not vibes-driven
 

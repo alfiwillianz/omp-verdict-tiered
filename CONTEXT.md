@@ -14,7 +14,7 @@ Auto Mode 门禁的启用状态:会话内存态,默认开启。有三个操作�
 
 ### 判定管线 (adjudication pipeline)
 
-从 tool_call 到三态裁决的完整判定流程,按序:自保护层 → 内置 floor → 用户 deny → denyPaths ask → 用户 allow → 灰区交分类器(未覆盖工具的 ignoreTools 命中先于灰区直接放行);ask 降级(无 UI → deny)与 fail-closed 内建于管线语义。实现形态:`adjudicate(session, call, env) → Verdict` 纯函数——零 UI 依赖的 deep module,表现(notify/confirm/select)由扩展 handler 承担。变更检测(门禁完整性)是管线前置的独立关注点,不属于判定管线。_Avoid_: 裁决管线(全仓统一用「判定管线」)。
+从 tool_call 到三态裁决的完整判定流程,按序:自保护层 → 内置 floor → 用户 deny → denyPaths ask → 用户 allow → 灰区交分类器(未覆盖工具的 ignoreTools 命中先于灰区直接放行);配置 `semanticAdjudication` 时灰区段为分层裁决(ADR-0009),否则为单分类器。ask 降级(无 UI → deny)与 fail-closed 内建于管线语义。实现形态:`adjudicate(session, call, env) → Verdict` 纯函数——零 UI 依赖的 deep module,表现(notify/confirm/select)由扩展 handler 承担。变更检测(门禁完整性)是管线前置的独立关注点,不属于判定管线。_Avoid_: 裁决管线(全仓统一用「判定管线」)。
 
 ### 裁决 (verdict)
 
@@ -78,7 +78,11 @@ Auto Mode 门禁的启用状态:会话内存态,默认开启。有三个操作�
 
 ### 分类器 (classifier)
 
-对灰区工具调用做风险判定的模型调用。模型**可配置**,默认**自省**;后端形态不限生成式——原生分类器(分类器型模型)经 pi 的 `classify()` 协议通道接入(ADR-0005)。
+对灰区工具调用做风险判定的模型调用。模型**可配置**,默认**自省**;后端形态不限生成式——原生分类器(分类器型模型)经 pi 的 `classify()` 协议通道接入(ADR-0005)。0.16 起可配置为**分层裁决**(ADR-0009):配置了 `semanticAdjudication` 块时,灰区由 Tier 1(本地 Lancet-Nano)+ Tier 2(模型注册表裁决器)两段组成;未配置时仍是单分类器路径。
+
+### 分层裁决 (tiered adjudication)
+
+ADR-0009 的两段式灰区语义:**Tier 1** 用本地 LANCET-Nano(INT8 ONNX,CPU,无网络)对 shell 命令做三档分诊——`not_flagged` 直接放行、`risky` 按 `riskyAction` 转 ask 或 deny、`review`(及任何弃权:超长、分词失败、推理错误、缺包)升级 **Tier 2**。Tier 2 从宿主模型注册表按角色解析裁决模型(`adjudicator` → `smol` → 会话模型),携带会话转录与 Tier 1 分诊结果,按严格 JSON 契约回答;`allow` 放行,`ask`/`deny` 一律转人工(模型不得在本层自动 deny),解析失败/超时/网络错误 fail-closed 为 ask(无 UI 降级 deny)。开关是配置块的有无;缺失时行为与 0.15 逐字节一致。_Avoid_: 把 Tier 1 的 `not_flagged` 当安全保证——它只是「本地模型未发现风险」,确定性 floor 仍是骨架。
 
 ### 自省 (self-reflection)
 
