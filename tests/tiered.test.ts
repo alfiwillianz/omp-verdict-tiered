@@ -533,7 +533,7 @@ describe("semanticAdjudication config", () => {
 		expect(parsed).toMatchObject({
 			tier1Lancet: { enabled: true, modelPath: DEFAULT_SEMANTIC_ADJUDICATION.tier1Lancet.modelPath, riskyThreshold: 0.85, riskyAction: "ask" },
 			tier2Role: "adjudicator",
-			tier2TimeoutMs: 5000,
+			tier2TimeoutMs: DEFAULT_SEMANTIC_ADJUDICATION.tier2TimeoutMs,
 		});
 		expect(skipped.join(" ")).toContain("tier1Lancet.enabled");
 		expect(skipped.join(" ")).toContain("tier1Lancet.modelPath");
@@ -551,7 +551,7 @@ describe("semanticAdjudication config", () => {
 		const state = new SessionState(buildProtectedSet(TMP_AGENT, null));
 		const report = state.reset("/proj");
 		expect(report.skipped).toEqual([]);
-		expect(state.userRules.semanticAdjudication).toMatchObject({ tier2Role: "adjudicator", tier2TimeoutMs: 5000 });
+		expect(state.userRules.semanticAdjudication).toMatchObject({ tier2Role: "adjudicator", tier2TimeoutMs: 5000 }); // explicit value wins over the 20000 default
 	});
 });
 
@@ -778,9 +778,9 @@ describe("config template + handler fail-closed", () => {
 		} as never);
 		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8"));
 		expect(raw.semanticAdjudication).toMatchObject({
-			tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85 },
+			tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
 			tier2Role: "adjudicator",
-			tier2TimeoutMs: 5000,
+			tier2TimeoutMs: 20000,
 		});
 	});
 

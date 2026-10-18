@@ -68,6 +68,21 @@ Requires omp ≥ 18.1 and Bun. Works in interactive and non-interactive (`-p`/js
 - `ctrl+shift+a` — toggle the master switch silently (the always-on footer is the only feedback; rebind or disable via `toggleShortcut`)
 - footer always shows `auto mode on` (green) / `auto mode off` (yellow)
 
+### Config commands
+
+Each `/verdict-*` command edits the **global** config (`~/.omp/agent/config/omp-verdict.json`) and applies to new sessions (or `/reload`). Bare invocation prints the current value and usage.
+
+| Command | Effect |
+|---|---|
+| `/verdict-status` | effective configuration, resolved paths, and the active tiers |
+| `/verdict-timeout <100-60000>` | Tier 2 adjudicator ceiling in ms (default 20000) |
+| `/verdict-role <role>` | Tier 2 model role; completion lists omp's chat roles plus any `modelRoles` you configured |
+| `/verdict-model <spec\|@role\|none>` | first-layer classifier model; `none` = self-reflection |
+| `/verdict-floor <0-100\|none>` | confidence floor for judgment-kind classifiers |
+| `/verdict-tier1 on\|off` | local LANCET-Nano triage |
+
+`/verdict-role` completes against omp's built-in chat roles (`adjudicator`, `smol`, `slow`, `default`, `task`, `advisor`) and any custom role found in `config.yml`'s `modelRoles`. Judge/image/web kind roles are excluded — Tier 2 needs a model that answers JSON.
+
 | Option | Default | Description |
 |---|---|---|
 | `--auto-mode` / `--no-auto-mode` | on | master switch |
@@ -114,7 +129,7 @@ Requires omp ≥ 18.1 and Bun. Works in interactive and non-interactive (`-p`/js
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",
-    "tier2TimeoutMs": 5000
+    "tier2TimeoutMs": 20000
   }
 }
 ```
@@ -124,7 +139,7 @@ Requires omp ≥ 18.1 and Bun. Works in interactive and non-interactive (`-p`/js
 - `ignoreTools` names uncovered tools (`todo`, `ask`, MCP/custom tools) that skip adjudication — **allow with zero model calls**; entries naming covered tools (`bash`/`read`/`write`/`edit`/`grep`/`glob`/`find`/`ast_edit`/`ast_grep`) are inert: those stay governed by the deny floor and your allow/deny rules, and the self-protection layer always runs first
 - `builtinDenyFloor: false` turns off the built-in danger/path floor (your risk; the self-protection layer below always stays on)
 - `classifierModel` pins the classifier model, e.g. `"zai/glm-5.3-flash:low"` (thinking suffix supported; default: session model with thinking off). It also accepts an omp role alias (`"@smol"`, `"@slow"`, any configured role)
-- `semanticAdjudication` opts into **tiered adjudication** ([ADR-0009](docs/adr/0009-tiered-semantic-adjudication.md)): shell commands are triaged locally first by **Tier 1** — LANCET-Nano, a 111 MB INT8 ONNX model on CPU, no network ([setup](#tier-1-lancet-nano-setup)). `not_flagged` allows immediately (~10 ms), `risky` asks (or denies with `riskyAction: "block"`), `review`/oversized input escalates to **Tier 2**, a model resolved from omp's model facade (`tier2Role`: `"adjudicator"` → `"smol"` → session model) that sees the tool call, the conversation and Tier 1's band. Tier 2 `allow` passes; `ask`/`deny` both go to you; any failure (no model, network, 5 s timeout, bad JSON) fails closed to ask (headless → deny). Omit the block and behavior is exactly 0.15's single-classifier path
+- `semanticAdjudication` opts into **tiered adjudication** ([ADR-0009](docs/adr/0009-tiered-semantic-adjudication.md)): shell commands are triaged locally first by **Tier 1** — LANCET-Nano, a 111 MB INT8 ONNX model on CPU, no network ([setup](#tier-1-lancet-nano-setup)). `not_flagged` allows immediately (~10 ms), `risky` asks (or denies with `riskyAction: "block"`), `review`/oversized input escalates to **Tier 2**, a model resolved from omp's model facade (`tier2Role`: `"adjudicator"` → `"smol"` → session model) that sees the tool call, the conversation and Tier 1's band. Tier 2 `allow` passes; `ask`/`deny` both go to you; any failure (no model, network, 20 s timeout, bad JSON) fails closed to ask (headless → deny). Omit the block and behavior is exactly 0.15's single-classifier path
 - `audit: true` records every **gray-zone adjudication** (the full transcript sent to the classifier, its raw response, the parsed verdict) as JSONL under `~/.omp/agent/verdicts/<sessionId>.jsonl` — one file per session, the 20 most recent kept. Interactive asks also record your answer (`userAnswer` ground truth, written after the confirm resolves), and protected-path asks are recorded too; rule allow/deny stays unaudited. Local-only and full-fidelity (protected-path plaintext may appear — it never leaves your machine); secret-shaped text is redacted on append (`<redacted:type#fingerprint>`, deterministic so cross-record tracing survives — `auditRedactSecrets: false` opts out; [ADR-0007](docs/adr/0007-audit-secret-redaction.md))
 - `notifyAllows: true` notifies on every **classifier allow** (reason + action line); default `false` keeps passes silent. Mechanical passes (your own allow rules, protected-path confirms) never notify
 - `classifierMinConfidence` (optional, [ADR-0004](docs/adr/0004-classifier-fallback-cascade.md)) sets the **confidence floor**: a native-judgment verdict below it is demoted — cascaded to `classifierFallbackModel` if set (`enforce`, the default = the second layer adjudicates; a demoted **deny or ask** can never be auto-relaxed to an allow; `shadow` = records its opinion only and you are asked), otherwise asked of you directly. At/above the floor the first layer is autonomous. The floor applies to judgment-kind models only (protocol-native confidence) — with a chat model it is inert
@@ -206,7 +221,7 @@ tool_call
 
 ```
 
-**fail-closed**: classifier exception / timeout (25s) / contract violation → deny; in tiered mode, Tier 2 failure (no model, network, 5s timeout, bad JSON) → ask (headless → deny). Never silently allow.
+**fail-closed**: classifier exception / timeout (25s) / contract violation → deny; in tiered mode, Tier 2 failure (no model, network, 20s timeout, bad JSON) → ask (headless → deny). Never silently allow.
 
 ## Status & limitations
 

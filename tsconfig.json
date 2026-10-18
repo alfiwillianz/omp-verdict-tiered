@@ -5,7 +5,11 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": [
+      "bun",
+      "node"
+    ]
   },
   "include": [
     "extensions/**/*.ts",

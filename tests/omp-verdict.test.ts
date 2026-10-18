@@ -833,6 +833,89 @@ describe("classifier", () => {
 
 // ── 6. /automode 命令语义(显式 on/off + 只读状态) ───────
 
+describe("/verdict-* config commands", () => {
+	const CFG = () => path.join(TMP_AGENT, "config", "omp-verdict.json");
+	const readCfg = () => JSON.parse(fs.readFileSync(CFG(), "utf8"));
+
+	test("status reports the effective config and the config path", async () => {
+		const h = session({});
+		await h.commands["verdict-status"].handler("", h.ctx);
+		const msg = h.notifies.at(-1)![0];
+		expect(msg).toContain("omp-verdict");
+		expect(msg).toContain(CFG());
+		expect(msg).toContain("tiered:");
+	});
+
+	test("timeout writes the global config and validates the range", async () => {
+		const h = session({});
+		await h.commands["verdict-timeout"].handler("20000", h.ctx);
+		expect(readCfg().semanticAdjudication.tier2TimeoutMs).toBe(20000);
+		expect(h.notifies.at(-1)![0]).toContain("20000ms");
+		await h.commands["verdict-timeout"].handler("50", h.ctx); // below the 100ms floor
+		expect(h.notifies.at(-1)![1]).toBe("warning");
+		expect(readCfg().semanticAdjudication.tier2TimeoutMs).toBe(20000); // unchanged
+	});
+
+	test("role writes the global config, strips @, and offers completions", async () => {
+		const h = session({});
+		await h.commands["verdict-role"].handler("@slow", h.ctx);
+		expect(readCfg().semanticAdjudication.tier2Role).toBe("slow");
+		const items = h.commands["verdict-role"].getArgumentCompletions!("")!;
+		expect(items.some((i: any) => i.value === "adjudicator")).toBe(true);
+		expect(items.some((i: any) => i.value === "smol")).toBe(true);
+		// judge-kind roles are excluded: Tier 2 needs a chat model
+		expect(items.some((i: any) => i.value === "judge")).toBe(false);
+		expect(h.commands["verdict-role"].getArgumentCompletions!("sl")!.map((i: any) => i.value)).toEqual(["slow"]);
+	});
+
+	test("model accepts a spec or 'none', and clears with none", async () => {
+		const h = session({});
+		await h.commands["verdict-model"].handler("zai/glm-4-flash:low", h.ctx);
+		expect(readCfg().classifierModel).toBe("zai/glm-4-flash:low");
+		await h.commands["verdict-model"].handler("none", h.ctx);
+		expect(readCfg().classifierModel).toBeNull();
+	});
+
+	test("floor accepts 0-100 or none", async () => {
+		const h = session({});
+		await h.commands["verdict-floor"].handler("60", h.ctx);
+		expect(readCfg().classifierMinConfidence).toBe(60);
+		await h.commands["verdict-floor"].handler("none", h.ctx);
+		expect(readCfg().classifierMinConfidence).toBeNull();
+		await h.commands["verdict-floor"].handler("101", h.ctx);
+		expect(h.notifies.at(-1)![1]).toBe("warning");
+	});
+
+	test("tier1 toggles the block and creates it when absent", async () => {
+		const h = session({});
+		await h.commands["verdict-tier1"].handler("off", h.ctx);
+		expect(readCfg().semanticAdjudication.tier1Lancet.enabled).toBe(false);
+		await h.commands["verdict-tier1"].handler("on", h.ctx);
+		expect(readCfg().semanticAdjudication.tier1Lancet.enabled).toBe(true);
+	});
+
+	test("writes preserve unrelated keys", async () => {
+		const h = session({});
+		setConfig({ allow: ["^ls\\b"], deny: ["push"], audit: true });
+		await h.commands["verdict-timeout"].handler("15000", h.ctx);
+		const cfg = readCfg();
+		expect(cfg.allow).toEqual(["^ls\\b"]);
+		expect(cfg.deny).toEqual(["push"]);
+		expect(cfg.audit).toBe(true);
+		expect(cfg.semanticAdjudication.tier2TimeoutMs).toBe(15000);
+	});
+
+	test("bare calls print usage without writing", async () => {
+		const h = session({});
+		const before = fs.readFileSync(CFG(), "utf8");
+		for (const cmd of ["verdict-timeout", "verdict-role", "verdict-model", "verdict-floor", "verdict-tier1"]) {
+			await h.commands[cmd].handler("", h.ctx);
+			expect(h.notifies.at(-1)![0]).toContain("Usage");
+		}
+		expect(fs.readFileSync(CFG(), "utf8")).toBe(before);
+	});
+});
+
 describe("/automode command", () => {
 	test("bare call is read-only status with stats and usage", async () => {
 		const h = session({});

@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **Tier 2 returned an empty completion on reasoning models.** The adjudicator call capped `maxTokens` at 256, which backends that ignore `disableReasoning` (they still emit a thinking preamble) and Anthropic-dialect proxies (`max_tokens` must exceed the 1024-token thinking budget) answer with an empty string — surfaced as `invalid adjudicator JSON ... raw output=""`. The budget is now 4096, matching omp's own judgment backend (`JUDGMENT_CHAT_MAX_TOKENS`) and its documented rationale. The main classifier's retry tier moves from 1024 to 4096 for the same reason. An empty completion now reports its `stopReason` and `errorMessage` instead of claiming malformed JSON, and a regression test pins the budget above the 1024 floor.
+- **`/verdict-*` configuration commands**: `/verdict-status`, `/verdict-timeout`, `/verdict-role`, `/verdict-model`, `/verdict-floor`, and `/verdict-tier1` edit the global config in place (atomic write, unrelated keys preserved) and apply on the next session or `/reload`. `/verdict-role` autocompletes omp's built-in chat roles plus any custom `modelRoles` from `config.yml`; judge/image/web kind roles are excluded because Tier 2 needs a JSON-answering chat model.
 
 ### Changed
 
+- **Tier 2 default timeout 5000 → 20000 ms.** A reasoning adjudicator routinely exceeds 5 s, which surfaced as `timeout after 5000ms` on ordinary commands. Set it per user with `/verdict-timeout`.
+- **Tier 2 fallback is now explained.** When the configured role and `smol` both fail to resolve, the one-shot warning names why each candidate lost (not configured, no auth, not a chat model) instead of silently running on the session model.
 - **Renamed the product surface to `omp-verdict-tiered`**: package name, entry file (`extensions/omp-verdict.ts`), user config (`~/.omp/agent/config/omp-verdict.json`), the Tier 1 cache (`~/.cache/omp/lancet-nano`), env vars (`OMP_AUTO_MODE_MODEL`, `OMP_AUTO_MODE_DEBUG`, `OMP_VERDICT_LANCET_DIR`), and all user-facing messages. Upstream attribution (`jesset/pi-verdict`) and the historical CHANGELOG/research entries keep the original name.
 - **omp-only host port.** The extension now targets omp (oh-my-pi) ≥ 18.1 and drops the pi host entirely:
   - Host API: `@oh-my-pi/pi-coding-agent` types; model lookup through `ctx.models.resolve` (accepts `provider/id`, a bare id, or a role alias); completion through `completeSimple` with `ctx.modelRegistry.resolver(model, sessionId)` so omp's auth rotation and OAuth refresh apply; thinking control in omp's dialect (`disableReasoning` / `reasoning`).
@@ -30,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Attribution to the original author (Jesset) in the README and LICENSE notice.
+
+### Fixed
+
+- **Tier 2 returned an empty completion on reasoning models.** The adjudicator call capped `maxTokens` at 256, which backends that ignore `disableReasoning` (they still emit a thinking preamble) and Anthropic-dialect proxies (`max_tokens` must exceed the 1024-token thinking budget) answer with an empty string — surfaced as `invalid adjudicator JSON ... raw output=""`. The budget is now 4096, matching omp's own judgment backend (`JUDGMENT_CHAT_MAX_TOKENS`) and its documented rationale. The main classifier's retry tier moves from 1024 to 4096 for the same reason. An empty completion now reports its `stopReason` and `errorMessage` instead of claiming malformed JSON, and a regression test pins the budget above the 1024 floor.
 
 ### Added (upstream 0.16 line, carried by this fork)
 

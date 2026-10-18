@@ -315,7 +315,7 @@ export type { SemanticAdjudicationConfig } from "../src/classifiers/tiered";
 export const DEFAULT_SEMANTIC_ADJUDICATION: SemanticAdjudicationConfig = {
 	tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
 	tier2Role: "adjudicator",
-	tier2TimeoutMs: 5000,
+	tier2TimeoutMs: 20000,
 };
 
 const EMPTY_RULES: UserRules = { allow: [], deny: [], denyPaths: [], ignoreTools: [], builtinDenyFloor: true, classifierModel: null, toggleShortcut: DEFAULT_TOGGLE_SHORTCUT, audit: false, notifyAllows: false, classifierMinConfidence: null, classifierFallbackModel: null, classifierFallbackMode: "enforce", auditRedactSecrets: true, semanticAdjudication: null };
@@ -366,6 +366,77 @@ function userConfigPath(): string {
 	return path.join(agentDirPath(), "config", "omp-verdict.json");
 }
 
+/** Read the raw config object for in-place edits by the /verdict-* commands.
+ *  Returns {} when the file is missing or unparseable — the caller writes a
+ *  complete, valid object back, so a corrupt file is repaired rather than
+ *  propagated. Never called from the adjudication path (that uses loadUserRules). */
+export function readRawUserConfig(): Record<string, unknown> {
+	try {
+		const parsed: unknown = JSON.parse(fs.readFileSync(userConfigPath(), "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+	} catch {
+		/* missing or malformed: start from an empty object */
+	}
+	return {};
+}
+
+/** Persist a config object atomically (temp file + rename). The gate's own
+ *  self-protection layer denies agent-side writes to this path — these commands
+ *  run inside the extension, which is the user acting through the UI, so they
+ *  are allowed by construction. Returns an error string on failure. */
+export function writeRawUserConfig(config: Record<string, unknown>): string | null {
+	const target = userConfigPath();
+	try {
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		const tmp = `${target}.tmp-${process.pid}`;
+		fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+		fs.renameSync(tmp, target);
+		return null;
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+/** Read the semanticAdjudication block, creating it with defaults when absent —
+ *  a /verdict-* write is an explicit opt-in to tiered mode. */
+function readSemanticBlock(config: Record<string, unknown>): Record<string, unknown> {
+	const existing = config.semanticAdjudication;
+	if (existing && typeof existing === "object" && !Array.isArray(existing)) return { ...(existing as Record<string, unknown>) };
+	return {
+		tier1Lancet: { ...DEFAULT_SEMANTIC_ADJUDICATION.tier1Lancet },
+		tier2Role: DEFAULT_SEMANTIC_ADJUDICATION.tier2Role,
+		tier2TimeoutMs: DEFAULT_SEMANTIC_ADJUDICATION.tier2TimeoutMs,
+	};
+}
+
+/** Role names configured in omp's own config (`modelRoles` in
+ *  `<agentDir>/config.yml`). Best-effort and side-effect free: a missing file,
+ *  a non-YAML body, or a shape we do not recognize yields [] — completion is a
+ *  convenience, never a gate. */
+export function configuredRoleNames(): string[] {
+	try {
+		const file = path.join(agentDirPath(), "config.yml");
+		const parsed = Bun.YAML.parse(fs.readFileSync(file, "utf8")) as { modelRoles?: unknown } | null;
+		const roles = parsed?.modelRoles;
+		if (!roles || typeof roles !== "object" || Array.isArray(roles)) return [];
+		return Object.keys(roles as Record<string, unknown>).filter((name) => /^[A-Za-z0-9_-]+$/.test(name));
+	} catch {
+		return [];
+	}
+}
+
+/** omp's built-in chat roles — the useful completion set for tier2Role. The
+ *  judge/image/web/... kind roles are excluded: Tier 2 needs a chat model that
+ *  answers JSON, and a kind role would fail closed on every escalation. */
+export const TIER2_ROLE_CHOICES: Array<{ role: string; description: string }> = [
+	{ role: "adjudicator", description: "dedicated role for this gate (falls back to smol, then the session model)" },
+	{ role: "smol", description: "omp's fast/cheap chat role" },
+	{ role: "slow", description: "omp's thinking chat role" },
+	{ role: "default", description: "omp's default chat role" },
+	{ role: "task", description: "omp's subagent chat role" },
+	{ role: "advisor", description: "omp's advisor chat role" },
+];
+
 const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	allow: ["^ls\\b"],
 	deny: [],
@@ -395,7 +466,7 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	semanticAdjudication: {
 		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
 		tier2Role: "adjudicator",
-		tier2TimeoutMs: 5000,
+		tier2TimeoutMs: 20000,
 	},
 }, null, 2)}\n`;
 
@@ -2287,6 +2358,7 @@ export function resolveAdjudicatorModel(
 	models: RoleRegistry | undefined,
 	sessionModel: AdjudicatorModel | null | undefined,
 	role: string,
+	onSkip?: (spec: string, why: string) => void,
 ): { model: AdjudicatorModel; role: string } | null {
 	const normalize = (candidate: unknown): AdjudicatorModel | null => {
 		if (!candidate || typeof candidate !== "object") return null;
@@ -2312,10 +2384,20 @@ export function resolveAdjudicatorModel(
 		for (const name of [role, "smol"]) {
 			for (const spec of name.startsWith("@") ? [name] : [`@${name}`, name]) {
 				try {
-					const model = normalize(models.resolve(spec));
-					if (usable(model)) return { model, role: name };
-				} catch {
-					// A broken alias falls through to the next candidate.
+					const raw = models.resolve(spec);
+					const model = normalize(raw);
+					if (!model) {
+						onSkip?.(spec, raw ? "resolved to an object without a model id" : "role is not configured");
+						continue;
+					}
+					if (!usable(model)) {
+						const label = `${(model as AdjudicatorModel).provider ?? "?"}/${(model as AdjudicatorModel).id}`;
+						onSkip?.(spec, `${label} is not a usable chat model or has no auth`);
+						continue;
+					}
+					return { model, role: name };
+				} catch (error) {
+					onSkip?.(spec, error instanceof Error ? error.message : String(error));
 				}
 			}
 		}
@@ -2716,6 +2798,180 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		return `\n${state.fallback.summary(state.userRules.classifierFallbackMode)}${shadowNote}`;
 	};
 
+	// ── /verdict-* configuration commands ───────────────────────────────────────
+	/** Shared write path: read → mutate → persist → report. Writes the GLOBAL
+	 *  config (~/.omp/agent/config/omp-verdict.json); a session restart or
+	 *  /reload applies the change. */
+	function updateConfig(ctx: ExtensionContext, mutate: (config: Record<string, unknown>) => string, done: string): void {
+		const config = readRawUserConfig();
+		const summary = mutate(config);
+		const error = writeRawUserConfig(config);
+		if (error) {
+			ctx.ui.notify(`omp-verdict: could not write ${userConfigPath()}: ${error}`, "error");
+			return;
+		}
+		ctx.ui.notify(`omp-verdict: ${summary}\n${done}\nsaved to ${userConfigPath()} — applies to new sessions (or /reload)`, "info");
+	}
+
+	pi.registerCommand("verdict-status", {
+		description: "Show the effective omp-verdict configuration and where it comes from",
+		handler: async (_args, ctx) => {
+			const rules = state.userRules;
+			const semantic = rules.semanticAdjudication;
+			const lines = [
+				`🛡️ omp-verdict — ${enabled ? "on" : "off"}`,
+				`config: ${userConfigPath()}`,
+				`classifier: ${rules.classifierModel ?? "(session model — self-reflection)"}`,
+				`floor: ${rules.classifierMinConfidence ?? "off"} · fallback: ${rules.classifierFallbackModel ?? "none"} (${rules.classifierFallbackMode})`,
+				`denyPaths: ${rules.denyPaths.length} · ignoreTools: ${rules.ignoreTools.length} · audit: ${rules.audit ? "on" : "off"}`,
+				semantic
+					? `tiered: Tier 1 ${semantic.tier1Lancet.enabled ? `Lancet-Nano (${semantic.tier1Lancet.modelPath})` : "off"} → Tier 2 role "${semantic.tier2Role}" (${semantic.tier2TimeoutMs}ms)`
+					: "tiered: off (no semanticAdjudication block)",
+				"",
+				"Configure: /verdict-timeout <ms> · /verdict-role <role> · /verdict-model <spec|none> · /verdict-floor <0-100|none> · /verdict-tier1 on|off",
+			];
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+
+	pi.registerCommand("verdict-timeout", {
+		description: "Set the Tier 2 adjudicator timeout in ms (100–60000): /verdict-timeout 20000",
+		getArgumentCompletions: (prefix) =>
+			["5000", "10000", "20000", "30000", "60000"]
+				.filter((v) => v.startsWith(prefix))
+				.map((v) => ({ value: v, label: `${v} ms`, description: v === "5000" ? "default" : undefined })),
+		handler: async (args, ctx) => {
+			const raw = args.trim();
+			if (!raw) {
+				const current = state.userRules.semanticAdjudication?.tier2TimeoutMs ?? DEFAULT_SEMANTIC_ADJUDICATION.tier2TimeoutMs;
+				ctx.ui.notify(`omp-verdict: Tier 2 timeout is ${current}ms\nUsage: /verdict-timeout <100-60000>`, "info");
+				return;
+			}
+			const ms = Number(raw);
+			if (!Number.isInteger(ms) || ms < 100 || ms > 60_000) {
+				ctx.ui.notify(`omp-verdict: "${raw}" is not a valid timeout — expected an integer 100–60000 (milliseconds)`, "warning");
+				return;
+			}
+			updateConfig(ctx, (config) => {
+				const block = readSemanticBlock(config);
+				block.tier2TimeoutMs = ms;
+				config.semanticAdjudication = block;
+				return `Tier 2 timeout → ${ms}ms`;
+			}, "A reasoning-model adjudicator often needs 15–30s.");
+		},
+	});
+
+	pi.registerCommand("verdict-role", {
+		description: "Set the Tier 2 adjudicator model role: /verdict-role adjudicator",
+		getArgumentCompletions: (prefix) => {
+			const known = TIER2_ROLE_CHOICES.map(({ role, description }) => ({ value: role, label: `@${role}`, description }));
+			// Custom roles configured in omp's modelRoles are valid targets too.
+			const custom = configuredRoleNames().filter((r) => !TIER2_ROLE_CHOICES.some((c) => c.role === r));
+			const extra = custom.map((role) => ({ value: role, label: `@${role}`, description: "configured in omp's modelRoles" }));
+			return [...known, ...extra].filter((item) => item.value.startsWith(prefix));
+		},
+		handler: async (args, ctx) => {
+			const raw = args.trim().replace(/^@/, "");
+			if (!raw) {
+				const current = state.userRules.semanticAdjudication?.tier2Role ?? DEFAULT_SEMANTIC_ADJUDICATION.tier2Role;
+				const choices = TIER2_ROLE_CHOICES.map((c) => `  @${c.role} — ${c.description}`).join("\n");
+				ctx.ui.notify(`omp-verdict: Tier 2 role is "${current}"\nUsage: /verdict-role <role>\n\nRoles:\n${choices}`, "info");
+				return;
+			}
+			updateConfig(ctx, (config) => {
+				const block = readSemanticBlock(config);
+				block.tier2Role = raw;
+				config.semanticAdjudication = block;
+				return `Tier 2 role → @${raw}`;
+			}, "Falls back to @smol, then the session model, when the role resolves to nothing.");
+		},
+	});
+
+	pi.registerCommand("verdict-model", {
+		description: "Set the first-layer classifier model (provider/id, @role, or 'none' for self-reflection)",
+		getArgumentCompletions: (prefix) => {
+			const suggestions = [
+				{ value: "none", label: "none", description: "self-reflection: use the session model" },
+				...TIER2_ROLE_CHOICES.filter((c) => c.role !== "adjudicator").map(({ role, description }) => ({
+					value: `@${role}`,
+					label: `@${role}`,
+					description,
+				})),
+			];
+			return suggestions.filter((item) => item.value.startsWith(prefix));
+		},
+		handler: async (args, ctx) => {
+			const raw = args.trim();
+			if (!raw) {
+				const current = state.userRules.classifierModel ?? "(session model — self-reflection)";
+				ctx.ui.notify(`omp-verdict: classifier model is ${current}\nUsage: /verdict-model <provider/id[:thinking] | @role | none>`, "info");
+				return;
+			}
+			const next = raw === "none" ? null : raw;
+			updateConfig(ctx, (config) => {
+				config.classifierModel = next;
+				return next === null ? "classifier model → self-reflection" : `classifier model → ${next}`;
+			}, "A judgment-kind model (typesafe/jev-latest) uses the typed-judgment path; anything else runs the chat contract.");
+		},
+	});
+
+	pi.registerCommand("verdict-floor", {
+		description: "Set the classifier confidence floor 0-100, or 'none' to disable: /verdict-floor 60",
+		getArgumentCompletions: (prefix) =>
+			["none", "50", "60", "70", "80", "90"]
+				.filter((v) => v.startsWith(prefix))
+				.map((v) => ({ value: v, label: v, description: v === "none" ? "floor off" : `${v}% minimum confidence` })),
+		handler: async (args, ctx) => {
+			const raw = args.trim().toLowerCase();
+			if (!raw) {
+				const current = state.userRules.classifierMinConfidence;
+				ctx.ui.notify(`omp-verdict: confidence floor is ${current ?? "off"}\nUsage: /verdict-floor <0-100 | none>`, "info");
+				return;
+			}
+			let value: number | null = null;
+			if (raw !== "none") {
+				const n = Number(raw);
+				if (!Number.isFinite(n) || n < 0 || n > 100) {
+					ctx.ui.notify(`omp-verdict: "${raw}" is not a valid floor — expected 0–100 or "none"`, "warning");
+					return;
+				}
+				value = n;
+			}
+			updateConfig(ctx, (config) => {
+				config.classifierMinConfidence = value;
+				return value === null ? "confidence floor → off" : `confidence floor → ${value}`;
+			}, "Applies to judgment-kind classifier models only; a chat model carries no protocol confidence.");
+		},
+	});
+
+	pi.registerCommand("verdict-tier1", {
+		description: "Enable or disable local LANCET-Nano triage: /verdict-tier1 on|off",
+		getArgumentCompletions: (prefix) =>
+			[
+				{ value: "on", label: "on", description: "triage shell commands locally before any network call" },
+				{ value: "off", label: "off", description: "send shell commands straight to Tier 2" },
+			].filter((item) => item.value.startsWith(prefix)),
+		handler: async (args, ctx) => {
+			const raw = args.trim().toLowerCase();
+			if (raw !== "on" && raw !== "off") {
+				const current = state.userRules.semanticAdjudication?.tier1Lancet.enabled;
+				ctx.ui.notify(`omp-verdict: Tier 1 is ${current === undefined ? "not configured" : current ? "on" : "off"}\nUsage: /verdict-tier1 on|off`, "info");
+				return;
+			}
+			updateConfig(ctx, (config) => {
+				const block = readSemanticBlock(config);
+				const tier1 = block.tier1Lancet;
+				block.tier1Lancet = {
+					...DEFAULT_SEMANTIC_ADJUDICATION.tier1Lancet,
+					...(tier1 && typeof tier1 === "object" ? tier1 : {}),
+					enabled: raw === "on",
+				};
+				config.semanticAdjudication = block;
+				return `Tier 1 LANCET-Nano → ${raw}`;
+			}, raw === "on" ? "Install the bundle with `bun run setup:lancet` if you have not already." : "Shell commands now go straight to Tier 2.");
+		},
+	});
+
 	pi.registerCommand("automode", {
 		description: "Show Auto Mode status, or set it: /automode on|off",
 		handler: async (args, ctx) => {
@@ -2927,11 +3183,24 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			resolve: (spec) => ctx.models.resolve(spec),
 			hasConfiguredAuth: (model) => ctx.modelRegistry.hasConfiguredAuth(model as never),
 		};
-		const resolved = resolveAdjudicatorModel(models, ctx.model as AdjudicatorModel | undefined, config.tier2Role);
+		// Collect why each candidate lost, so a silent fall-through to the session
+		// model is explainable instead of mysterious (the symptom: Tier 2 runs on the
+		// session model even though the role is configured).
+		const skips: string[] = [];
+		const resolved = resolveAdjudicatorModel(models, ctx.model as AdjudicatorModel | undefined, config.tier2Role, (spec, why) =>
+			skips.push(`${spec}: ${why}`),
+		);
+		if (resolved?.role === "session" && !warnedAdjudicator) {
+			warnedAdjudicator = true;
+			ctx.ui.notify(
+				`omp-verdict: Tier 2 fell back to the session model — role "${config.tier2Role}" and "smol" did not resolve${skips.length > 0 ? ` (${skips.join("; ")})` : ""}. Set a role with /verdict-role.`,
+				"warning",
+			);
+		}
 		if (!resolved && !warnedAdjudicator) {
 			warnedAdjudicator = true;
 			ctx.ui.notify(
-				`omp-verdict: no adjudicator model resolved (role "${config.tier2Role}" → "smol" → session model) — escalated calls fail closed to ask`,
+				`omp-verdict: no adjudicator model resolved (role "${config.tier2Role}" → "smol" → session model${skips.length > 0 ? `; ${skips.join("; ")}` : ""}) — escalated calls fail closed to ask`,
 				"warning",
 			);
 		}

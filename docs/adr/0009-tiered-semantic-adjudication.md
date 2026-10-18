@@ -30,7 +30,7 @@ Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` 
 - **Input**: a JSON payload with the tool name and arguments, the condensed transcript (the same #22-hardened builder the legacy classifier uses: recent user messages + tool calls, action pinned last, line-break forging defended), and Tier 1's band/probability/reason. The denyPaths existence hint is appended when protected paths are configured (zero plaintext, ADR-0002).
 - **Contract**: strict JSON `{"verdict":"allow"|"ask"|"deny","reason":"brief string"}`. Fenced JSON is tolerated; prose, malformed JSON, an invalid verdict or a non-string reason are contract violations and fail closed. No `<verdict>` prefix — that contract belonged to the chat path's text parser.
 - **Mapping**: Tier 2 `allow` → allow. Tier 2 `ask` **or** `deny` → **ask**. A model may not auto-deny at this tier: the task's contract reserves automatic denial for Tier 1's risky band, and an ask costs one keypress while a wrong deny is invisible. Headless sessions degrade the ask to deny (the standing rule).
-- **Fail-closed**: no resolved model, transport error, timeout (`tier2TimeoutMs`, default 5,000 ms), or unparseable output → ask (headless → deny), `source: "fail-closed"` on the verdict and audit record. The timeout is enforced with `Promise.race`, so a provider that ignores abort signals cannot hold the gate open.
+- **Fail-closed**: no resolved model, transport error, timeout (`tier2TimeoutMs`, default 20,000 ms), or unparseable output → ask (headless → deny), `source: "fail-closed"` on the verdict and audit record. The timeout is enforced with `Promise.race`, so a provider that ignores abort signals cannot hold the gate open.
 
 ## Position in the pipeline
 
@@ -50,7 +50,7 @@ The tiered path replaces exactly the gray-zone classifier block: after self-prot
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",
-    "tier2TimeoutMs": 5000
+    "tier2TimeoutMs": 20000
   }
 }
 ```

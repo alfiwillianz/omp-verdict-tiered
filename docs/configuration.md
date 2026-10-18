@@ -33,7 +33,7 @@ Everything the gate reads from disk lives in `<agentDir>/config/omp-verdict.json
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",
-    "tier2TimeoutMs": 5000
+    "tier2TimeoutMs": 20000
   }
 }
 ```
@@ -70,7 +70,7 @@ The optional `semanticAdjudication` block replaces the gray-zone classifier call
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",
-    "tier2TimeoutMs": 5000
+    "tier2TimeoutMs": 20000
   }
 }
 ```
@@ -83,7 +83,7 @@ The optional `semanticAdjudication` block replaces the gray-zone classifier call
   - `enabled: false` skips Tier 1 entirely: shell commands go straight to Tier 2 and its payload carries no triage block.
   - `modelPath` is the verified bundle directory (`~` expanded). Install it with `bun run setup:lancet` (see below).
 - **`tier2Role`** (default `"adjudicator"`) — resolved through omp's model facade: the configured role (as `@<role>`) → `"smol"` → the session model. Judge-kind entries are skipped (Tier 2 needs a generative JSON answer), as are entries without configured auth. Resolution is lazy — a Tier 1 `not_flagged` call never resolves a model or emits its warning.
-- **`tier2TimeoutMs`** (default `5000`, 100–60000) — the hard ceiling for one Tier 2 call, enforced with `Promise.race` even if the provider ignores abort signals. On expiry the call fails closed.
+- **`tier2TimeoutMs`** (default `20000`, 100–60000) — the hard ceiling for one Tier 2 call, enforced with `Promise.race` even if the provider ignores abort signals. On expiry the call fails closed.
 - **Tier 2 verdict mapping**: `allow` → allow; `ask` and `deny` both → **ask**. A model may not auto-deny at this tier — automatic denial belongs to Tier 1's `risky` band, and an ask costs one keypress while a wrong deny is invisible. Headless sessions degrade the ask to deny.
 - **Fail-closed**: no resolved model, transport error, timeout, or unparseable/malformed JSON → ask (headless → deny), with `source: "fail-closed"` on the verdict and the audit record. The reason names the failure; it never silently allows.
 - **Non-shell tools** (MCP/custom tools, file tools that reach the gray zone) bypass Tier 1 and go straight to Tier 2 with the session transcript.
@@ -127,6 +127,21 @@ Notes: user `allow` entries are full-command regexes for bash (and resolved abso
 ## Why no built-in allowlist?
 
 Bypass testing of the rule layer ([writeup](../research/rule-layer-security-audit.md)) showed that allowlist robustness is very limited. On *your* surfaces (commands you run, paths you own) the built-in layer only makes **deny** claims (the sound direction); allow claims are yours. There is no built-in allow at all in this fork.
+
+## Config commands
+
+`/verdict-*` commands edit the **global** config in place and apply to new sessions (or `/reload`). Bare invocation prints the current value and usage; invalid values are rejected with a warning and leave the file untouched. Writes are atomic (temp file + rename, mode `0600`) and preserve unrelated keys.
+
+| Command | Field | Notes |
+|---|---|---|
+| `/verdict-status` | — | read-only summary: effective values, config path, active tiers |
+| `/verdict-timeout <100-60000>` | `semanticAdjudication.tier2TimeoutMs` | default 20000; a reasoning adjudicator often needs 15–30 s |
+| `/verdict-role <role>` | `semanticAdjudication.tier2Role` | a leading `@` is stripped; completion offers omp's chat roles plus any custom `modelRoles` from `config.yml` |
+| `/verdict-model <spec\|@role\|none>` | `classifierModel` | `none` clears it back to self-reflection |
+| `/verdict-floor <0-100\|none>` | `classifierMinConfidence` | judgment-kind classifiers only |
+| `/verdict-tier1 on\|off` | `semanticAdjudication.tier1Lancet.enabled` | creates the block with defaults when absent |
+
+Writing any `semanticAdjudication` field opts into tiered adjudication — the block's presence is the switch.
 
 ## Host notes (omp)
 
