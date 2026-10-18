@@ -41,12 +41,17 @@ git clone git@github.com:alfiwillianz/omp-verdict-tiered.git
 cd omp-verdict-tiered
 bun install
 
+# download the Tier 1 model bundle (~111 MB, hash-verified) to ~/.cache/omp/lancet-nano
+bun run setup:lancet
+
 # install the package directory into omp (loaded in place)
 omp plugin install "$PWD"
 
 # or try it for one invocation
 omp --extension "$PWD"
 ```
+
+`bun run setup:lancet` is required for **tiered adjudication** ([`semanticAdjudication`](#tier-1-lancet-nano-setup)): without the bundle, Tier 1 cannot run and shell commands escalate to the Tier 2 model on every gray-zone call. Skip it if you only use the rule layer plus the first-layer classifier.
 
 Full guide — install forms, the Tier 1 bundle, updating, troubleshooting: **[docs/installation.md](docs/installation.md)**.
 

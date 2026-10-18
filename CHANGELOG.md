@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`/verdict-*` configuration commands**: `/verdict-status`, `/verdict-timeout`, `/verdict-role`, `/verdict-model`, `/verdict-floor`, and `/verdict-tier1` edit the global config in place (atomic write, unrelated keys preserved) and apply on the next session or `/reload`. `/verdict-role` autocompletes omp's built-in chat roles plus any custom `modelRoles` from `config.yml`; judge/image/web kind roles are excluded because Tier 2 needs a JSON-answering chat model.
 
+### Documentation
+
+- **Quick start now includes `bun run setup:lancet`.** The Tier 1 bundle is a prerequisite for tiered adjudication, not an optional extra: without it Tier 1 cannot run and every shell gray-zone call escalates to Tier 2. The step is marked as skippable only for rule-layer plus first-layer use.
+
 ### Changed
 
 - **Tier 2 default timeout 5000 → 20000 ms.** A reasoning adjudicator routinely exceeds 5 s, which surfaced as `timeout after 5000ms` on ordinary commands. Set it per user with `/verdict-timeout`.
