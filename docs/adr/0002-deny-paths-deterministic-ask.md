@@ -158,7 +158,7 @@ Two decisions:
 The zero-plaintext-out promise scopes to data *leaving the machine* or
 *flowing into agent context* (reasons, notifies, observability).
 `<agentDir>/verdicts/` is a local observation record in the same trust
-domain as `pi-verdict.json` itself: records carry full-fidelity plaintext,
+domain as `omp-verdict.json` itself: records carry full-fidelity plaintext,
 including protected-path spellings matched by gray-zone adjudications — the
 transcripts already contain path-bearing command text, so redacting the
 `detail` field alone would be inconsistent. The directory is denied to agent

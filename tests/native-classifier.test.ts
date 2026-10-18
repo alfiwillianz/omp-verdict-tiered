@@ -10,7 +10,7 @@ import {
 	VERDICT_QUESTIONS,
 	type ClassifierAnswerShape,
 	type JudgeFn,
-} from "../extensions/pi-verdict.ts";
+} from "../extensions/omp-verdict.ts";
 
 const JEV = { id: "jev-latest", api: "typesafe", provider: "typesafe" } as any;
 const LLAMA = { id: "gpt-oss-20b", api: "llama-cpp-classify", provider: "llama" } as any;

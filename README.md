@@ -1,4 +1,4 @@
-# pi-verdict (omp fork)
+# omp-verdict-tiered
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![omp extension](https://img.shields.io/badge/omp-extension-blueviolet)](https://omp.sh)
@@ -37,8 +37,8 @@ Full statement in [docs/security-principles.md](docs/security-principles.md).
 ## Quick start
 
 ```bash
-git clone git@github.com:alfiwillianz/pi-verdict-tiered.git
-cd pi-verdict-tiered
+git clone git@github.com:alfiwillianz/omp-verdict-tiered.git
+cd omp-verdict-tiered
 bun install
 
 # install the package directory into omp (loaded in place)
@@ -57,8 +57,8 @@ Requires omp ≥ 18.1 and Bun. Works in interactive and non-interactive (`-p`/js
 | | omp |
 |---|---|
 | install | `omp plugin install "$PWD"` from a clone ([guide](docs/installation.md)) |
-| plugin copy | `~/.omp/plugins/node_modules/pi-verdict/` (omp ≥ 18.1; ≤18.0: under `agent/`) |
-| user rules | `~/.omp/agent/config/pi-verdict.json` |
+| plugin copy | `~/.omp/plugins/node_modules/omp-verdict-tiered/` (omp ≥ 18.1; ≤18.0: under `agent/`) |
+| user rules | `~/.omp/agent/config/omp-verdict.json` |
 | credential store (S0 hard deny) | `~/.omp/agent/agent.db`, `~/.omp/agent/secrets.yml` |
 | extension discovery | `~/.omp/agent/extensions/`, `<project>/.omp/extensions/` |
 
@@ -73,10 +73,10 @@ Requires omp ≥ 18.1 and Bun. Works in interactive and non-interactive (`-p`/js
 | `--auto-mode` / `--no-auto-mode` | on | master switch |
 | `--auto-mode-model provider/id[:thinking]` | session model | classifier model, or `@role` (e.g. `@smol`) |
 | `--auto-mode-debug` | off | full verdict notifications |
-| `PI_AUTO_MODE_MODEL` | — | env form of the model flag |
-| `PI_AUTO_MODE_DEBUG=1` | off | env form of debug (flag wins) |
+| `OMP_AUTO_MODE_MODEL` | — | env form of the model flag |
+| `OMP_AUTO_MODE_DEBUG=1` | off | env form of debug (flag wins) |
 
-### User rules (`~/.omp/agent/config/pi-verdict.json`)
+### User rules (`~/.omp/agent/config/omp-verdict.json`)
 
 ```json
 {
@@ -109,7 +109,7 @@ Requires omp ≥ 18.1 and Bun. Works in interactive and non-interactive (`-p`/js
   "semanticAdjudication": {
     "tier1Lancet": {
       "enabled": true,
-      "modelPath": "~/.cache/pi/lancet-nano",
+      "modelPath": "~/.cache/omp/lancet-nano",
       "riskyThreshold": 0.85,
       "riskyAction": "ask"
     },
@@ -135,7 +135,7 @@ No built-in allowlist — every "always allow" claim is yours ([why](docs/config
 ### Tier 1 Lancet-Nano setup
 
 ```bash
-bun run setup:lancet            # ~/.cache/pi/lancet-nano (pinned v0.4.3, hash-verified)
+bun run setup:lancet            # ~/.cache/omp/lancet-nano (pinned v0.4.3, hash-verified)
 bun run setup:lancet --check    # verify an existing bundle, no network
 bun run setup:lancet --dir DIR  # custom location (must match tier1Lancet.modelPath)
 ```

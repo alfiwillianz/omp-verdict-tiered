@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Everything the gate reads from disk lives in `<agentDir>/config/pi-verdict.json` (first run generates a template there; `PI_CODING_AGENT_DIR` overrides the location for omp's default profile). `<agentDir>` is `~/.omp/agent` unless omp's profile/XDG resolution says otherwise. This page is the full reference; the README keeps a quick-start subset.
+Everything the gate reads from disk lives in `<agentDir>/config/omp-verdict.json` (first run generates a template there; `PI_CODING_AGENT_DIR` overrides the location for omp's default profile). `<agentDir>` is `~/.omp/agent` unless omp's profile/XDG resolution says otherwise. This page is the full reference; the README keeps a quick-start subset.
 
 ## User rules
 
@@ -28,7 +28,7 @@ Everything the gate reads from disk lives in `<agentDir>/config/pi-verdict.json`
   "semanticAdjudication": {
     "tier1Lancet": {
       "enabled": true,
-      "modelPath": "~/.cache/pi/lancet-nano",
+      "modelPath": "~/.cache/omp/lancet-nano",
       "riskyThreshold": 0.85,
       "riskyAction": "ask"
     },
@@ -65,7 +65,7 @@ The optional `semanticAdjudication` block replaces the gray-zone classifier call
   "semanticAdjudication": {
     "tier1Lancet": {
       "enabled": true,
-      "modelPath": "~/.cache/pi/lancet-nano",
+      "modelPath": "~/.cache/omp/lancet-nano",
       "riskyThreshold": 0.85,
       "riskyAction": "ask"
     },
@@ -88,12 +88,12 @@ The optional `semanticAdjudication` block replaces the gray-zone classifier call
 - **Fail-closed**: no resolved model, transport error, timeout, or unparseable/malformed JSON → ask (headless → deny), with `source: "fail-closed"` on the verdict and the audit record. The reason names the failure; it never silently allows.
 - **Non-shell tools** (MCP/custom tools, file tools that reach the gray zone) bypass Tier 1 and go straight to Tier 2 with the session transcript.
 - **Audit**: gray-zone records gain optional `tier1` (`band`, `pRisky`, `riskLogit`, `reason`, `durationMs`) and `tier2` (`model`, `role`, `verdict`, `reason`, `durationMs`, `error`) sub-objects. Top-level `source` stays `"model"` for tier-produced verdicts and `"fail-closed"` for Tier 2 failures, so existing corpus queries keep working.
-- **Single-file installs**: the tiered runtime lives under `src/classifiers/`. A bare copied `extensions/pi-verdict.ts` cannot load it; the gate then falls back to the legacy classifier path and stamps `tieredFallback` on the audit record — it never silently allows.
+- **Single-file installs**: the tiered runtime lives under `src/classifiers/`. A bare copied `extensions/omp-verdict.ts` cannot load it; the gate then falls back to the legacy classifier path and stamps `tieredFallback` on the audit record — it never silently allows.
 
 ### Installing the Tier 1 bundle
 
 ```bash
-bun run setup:lancet            # ~/.cache/pi/lancet-nano (pinned v0.4.3)
+bun run setup:lancet            # ~/.cache/omp/lancet-nano (pinned v0.4.3)
 bun run setup:lancet --check    # verify an existing bundle, no network
 bun run setup:lancet --dir DIR  # custom location (must match tier1Lancet.modelPath)
 bun run setup:lancet --force    # re-download even when the bundle verifies
@@ -130,7 +130,7 @@ Bypass testing of the rule layer ([writeup](../research/rule-layer-security-audi
 
 ## Host notes (omp)
 
-This repository is the **`pi-verdict-tiered` fork** and runs on **omp only**; it is not published to npm — install it from a clone per [installation.md](installation.md). It requires **omp ≥ 18.1**.
+This repository is the **`omp-verdict-tiered` fork** and runs on **omp only**; it is not published to npm — install it from a clone per [installation.md](installation.md). It requires **omp ≥ 18.1**.
 
 The extension self-anchors to the omp agent tree it is installed in: `PI_CODING_AGENT_DIR` wins, otherwise the install path (`<home>/.omp/agent/extensions/…` or either plugin layout) anchors to `<home>/.omp/agent`, and a dev checkout falls back to `~/.omp/agent`.
 

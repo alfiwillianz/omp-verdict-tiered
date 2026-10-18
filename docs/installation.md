@@ -1,6 +1,6 @@
-# Installing pi-verdict-tiered (omp fork)
+# Installing omp-verdict-tiered
 
-This repository is the **`pi-verdict-tiered` fork** of [pi-verdict](https://github.com/jesset/pi-verdict), ported to run on **omp (oh-my-pi) only**. It carries the tiered semantic adjudication work ([ADR-0009](adr/0009-tiered-semantic-adjudication.md)) on top of the 0.15.0 line.
+This repository is the **`omp-verdict-tiered` fork** of [pi-verdict](https://github.com/jesset/pi-verdict), ported to run on **omp (oh-my-pi) only**. It carries the tiered semantic adjudication work ([ADR-0009](adr/0009-tiered-semantic-adjudication.md)) on top of the 0.15.0 line.
 
 The fork is **not published to npm**. Install it from a clone.
 
@@ -16,8 +16,8 @@ The fork is **not published to npm**. Install it from a clone.
 ## 1. Clone and prepare the checkout
 
 ```bash
-git clone git@github.com:alfiwillianz/pi-verdict-tiered.git
-cd pi-verdict-tiered
+git clone git@github.com:alfiwillianz/omp-verdict-tiered.git
+cd omp-verdict-tiered
 bun install
 bun run typecheck
 bun test          # optional: offline stub suite
@@ -37,20 +37,20 @@ omp plugin install "$PWD"
 
 omp records the path in its plugin state (`~/.omp/plugins/omp-plugins.lock.json`) and loads the extension **in place**; nothing is copied. Keep the clone at that path — moving or deleting it breaks the install. Re-run `bun install` after dependency changes, then restart omp or run `/reload`.
 
-The manifest is the `omp` key in `package.json` (`{"omp": {"extensions": ["./extensions"]}}`), so omp discovers `extensions/pi-verdict.ts` as the entry point.
+The manifest is the `omp` key in `package.json` (`{"omp": {"extensions": ["./extensions"]}}`), so omp discovers `extensions/omp-verdict.ts` as the entry point.
 
 Because the loaded extension sits in your checkout, the self-protection write layer treats it as a dev checkout: your edits are legitimate and are not blocked (the user config remains protected). That is the intended workflow for a fork.
 
 ### Option B — git install
 
 ```bash
-omp plugin install github:alfiwillianz/pi-verdict-tiered
+omp plugin install github:alfiwillianz/omp-verdict-tiered
 ```
 
 omp clones the repository into its plugins tree and installs dependencies. This is the reproducible form for using the fork without editing it. Update with:
 
 ```bash
-omp plugin upgrade pi-verdict-tiered
+omp plugin upgrade omp-verdict-tiered
 ```
 
 Changes made in a local clone do not affect a git install; push to the fork (or switch to Option A) to ship edits.
@@ -61,18 +61,18 @@ Changes made in a local clone do not affect a git install; push to the fork (or 
 omp --extension "$PWD"
 ```
 
-Loads the package directory for this run only. Loading `./extensions/pi-verdict.ts` directly from inside the checkout also works, because its sibling `src/` tree stays resolvable.
+Loads the package directory for this run only. Loading `./extensions/omp-verdict.ts` directly from inside the checkout also works, because its sibling `src/` tree stays resolvable.
 
 ### Do not copy the single file if you want tiered adjudication
 
-`extensions/pi-verdict.ts` is the entry point, but the tiered runtime lives in `src/classifiers/`. A bare copy — for example `cp extensions/pi-verdict.ts ~/.omp/agent/extensions/` — has no package tree beside it; a configured `semanticAdjudication` block then falls back to the legacy single-classifier path and stamps `tieredFallback` on the audit record. Install the package directory (Options A–C) to keep Tier 1 and Tier 2.
+`extensions/omp-verdict.ts` is the entry point, but the tiered runtime lives in `src/classifiers/`. A bare copy — for example `cp extensions/omp-verdict.ts ~/.omp/agent/extensions/` — has no package tree beside it; a configured `semanticAdjudication` block then falls back to the legacy single-classifier path and stamps `tieredFallback` on the audit record. Install the package directory (Options A–C) to keep Tier 1 and Tier 2.
 
 ## 3. Install the Tier 1 bundle (optional)
 
 From the checkout:
 
 ```bash
-bun run setup:lancet            # ~/.cache/pi/lancet-nano (pinned v0.4.3, hash-verified)
+bun run setup:lancet            # ~/.cache/omp/lancet-nano (pinned v0.4.3, hash-verified)
 bun run setup:lancet --check    # verify only, no network
 bun run setup:lancet --dir DIR  # custom location; must match tier1Lancet.modelPath
 bun run setup:lancet --force    # re-download even when the bundle verifies
@@ -80,14 +80,14 @@ bun run setup:lancet --force    # re-download even when the bundle verifies
 
 The setup verifies `export.json` against the release manifest digest, every model file against `export.json`, and the tokenizer against `@xenova/transformers`. The runtime re-verifies files on every load; a tampered or missing bundle never produces `not_flagged` — Tier 1 escalates to Tier 2 with a one-shot warning.
 
-Then enable the block in `~/.omp/agent/config/pi-verdict.json` (edit outside omp; the gate denies writes to its own config):
+Then enable the block in `~/.omp/agent/config/omp-verdict.json` (edit outside omp; the gate denies writes to its own config):
 
 ```json
 {
   "semanticAdjudication": {
     "tier1Lancet": {
       "enabled": true,
-      "modelPath": "~/.cache/pi/lancet-nano",
+      "modelPath": "~/.cache/omp/lancet-nano",
       "riskyThreshold": 0.85,
       "riskyAction": "ask"
     },
@@ -111,7 +111,7 @@ Full reference: [configuration.md](configuration.md#tiered-semantic-adjudication
 Local checkout (Option A):
 
 ```bash
-cd ~/src/pi-verdict-tiered
+cd ~/src/omp-verdict-tiered
 git pull
 bun install
 ```
@@ -121,16 +121,16 @@ Then restart omp. If the LANCET bundle pin changed, re-run `bun run setup:lancet
 Git install (Option B):
 
 ```bash
-omp plugin upgrade pi-verdict-tiered
+omp plugin upgrade omp-verdict-tiered
 ```
 
 ## Uninstall
 
 ```bash
-omp plugin uninstall pi-verdict-tiered
+omp plugin uninstall omp-verdict-tiered
 ```
 
-The user config at `~/.omp/agent/config/pi-verdict.json` is not removed; delete it manually if you want a clean slate.
+The user config at `~/.omp/agent/config/omp-verdict.json` is not removed; delete it manually if you want a clean slate.
 
 ## Troubleshooting
 
@@ -143,7 +143,7 @@ The user config at `~/.omp/agent/config/pi-verdict.json` is not removed; delete 
 | `onnxruntime-node` fails to load | Run `bun install` in the checkout and restart; confirm the platform has a prebuilt ONNX Runtime binary. |
 | Tier 2 always uses the session model | No `@adjudicator` or `@smol` role is configured; set one in omp's model roles or accept the session-model fallback. |
 | A `typesafe/jev-latest` classifier warns "judge-kind models" | Judgment models answer typed questions, not chat completions. That spec works for the classifier only through omp's judge client — if it is not resolving, check the provider credential. |
-| Config edits have no effect | A new session is required; edit `~/.omp/agent/config/pi-verdict.json` outside omp. |
+| Config edits have no effect | A new session is required; edit `~/.omp/agent/config/omp-verdict.json` outside omp. |
 | Extension loads but never gates | Another extension or `--no-extensions` may be suppressing discovery; check `omp --verbose` startup output. |
 
 ## See also

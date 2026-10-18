@@ -9,7 +9,7 @@ The gray zone has been one classifier call since ADR-0005 (a typed judgment or a
 
 The production corpus says most of that spend is unnecessary. Of the gray-zone calls that reach a classifier, the large majority are ordinary developer commands (`ls`, `git status`, `cargo build`, reads inside the project) whose risk is decidable from the command string alone. A local model that is right about those calls removes the network from the hot path; a model that is unsure should still get the full session context.
 
-Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` block in `pi-verdict.json`. Absent block → the pre-0.16 single-classifier path, byte-identical.
+Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` block in `omp-verdict.json`. Absent block → the pre-0.16 single-classifier path, byte-identical.
 
 ## Tier 1 — local LANCET-Nano triage
 
@@ -45,7 +45,7 @@ The tiered path replaces exactly the gray-zone classifier block: after self-prot
   "semanticAdjudication": {
     "tier1Lancet": {
       "enabled": true,
-      "modelPath": "~/.cache/pi/lancet-nano",
+      "modelPath": "~/.cache/omp/lancet-nano",
       "riskyThreshold": 0.85,
       "riskyAction": "ask"
     },

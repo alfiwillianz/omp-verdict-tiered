@@ -81,7 +81,7 @@ Recorded as a minimum bar plus a human decision, never an automatic threshold: a
 ## Consequences
 
 - The config surface grows by three keys (template + `_hint` updated); users who configure nothing see byte-identical behavior (pinned by tests: one model call per trigger flavor, non-jev reasons never confidence-trigger).
-- `pi-verdict.ts` imports `parseJevConfidence` from the jev adapter (top-level side-effect-free — the import cannot register providers or touch the network; coupling noted in the PR).
+- `omp-verdict.ts` imports `parseJevConfidence` from the jev adapter (top-level side-effect-free — the import cannot register providers or touch the network; coupling noted in the PR).
 - The audit schema gains an optional `fallback` sub-object; consumers ignoring unknown fields are unaffected, and `fallback.effective` is the only place the enforced verdict lives.
 - The corpus question "is the first layer reliable?" becomes measurable once #62 ground truth accumulates; revisit shape (b) (judge everything) only if shadow data shows confidently-wrong first-layer allows are common.
 

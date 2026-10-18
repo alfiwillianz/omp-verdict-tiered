@@ -8,13 +8,13 @@
 
 ## Project
 
-This repository is **pi-verdict-tiered**, the omp (oh-my-pi) fork of [pi-verdict](https://github.com/jesset/pi-verdict): a minimal permission gate extension (rule layer + model classifier). Read `CONTEXT.md` (glossary) and `docs/adr/` before touching domain terms or design decisions; design conclusions are backed by the measurements under `research/`.
+This repository is **omp-verdict-tiered**, the omp (oh-my-pi) fork of [pi-verdict](https://github.com/jesset/pi-verdict): a minimal permission gate extension (rule layer + model classifier). Read `CONTEXT.md` (glossary) and `docs/adr/` before touching domain terms or design decisions; design conclusions are backed by the measurements under `research/`.
 
 ### Gate self-reference (ADR-0001)
 
 The extension's own security boundary is guarded by the extension itself, which constrains the development workflow:
 
-- The agent cannot write `<agentDir>/config/pi-verdict.json` or the installed copy under `<agentDir>/extensions/` — the self-protection layer always denies, and no configuration exempts it
+- The agent cannot write `<agentDir>/config/omp-verdict.json` or the installed copy under `<agentDir>/extensions/` — the self-protection layer always denies, and no configuration exempts it
 - Testing a new version = the user copies it into place from a terminal and restarts omp (the agent doing it would be blocked; the tiered line is multi-file, so install the package directory rather than copying the entry file). User-rule edits are the same: manual only.
 
 ### Release

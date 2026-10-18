@@ -4,8 +4,8 @@
  * validation, and the adjudicate() integration (including audit fields).
  *
  * Hermetic by default: the ONNX encoder is not required. The end-to-end Lancet
- * inference test runs only when PI_VERDICT_LANCET_DIR points at a verified bundle
- * (`bun run setup:lancet` then `PI_VERDICT_LANCET_DIR=~/.cache/pi/lancet-nano bun test`).
+ * inference test runs only when OMP_VERDICT_LANCET_DIR points at a verified bundle
+ * (`bun run setup:lancet` then `OMP_VERDICT_LANCET_DIR=~/.cache/omp/lancet-nano bun test`).
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import * as fs from "node:fs";
@@ -18,7 +18,7 @@ import {
 	resolveAdjudicatorModel,
 	resolveSemanticAdjudication,
 	SessionState,
-} from "../extensions/pi-verdict.ts";
+} from "../extensions/omp-verdict.ts";
 import { CodeT5ByteLevelTokenizer, decodeTokenIds } from "../src/classifiers/tokenizer.ts";
 import {
 	bandFor,
@@ -37,7 +37,7 @@ import { runTieredAdjudication } from "../src/classifiers/tiered.ts";
 import type { LancetResult } from "../src/classifiers/lancet.ts";
 import type { AdjudicatorComplete } from "../src/classifiers/omp-adjudicator.ts";
 
-const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-verdict-tiered-test-"));
+const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "omp-verdict-tiered-test-"));
 const realAgentDir = process.env.PI_CODING_AGENT_DIR;
 
 beforeAll(() => {
@@ -54,14 +54,14 @@ beforeEach(() => {
 });
 
 function writeConfig(raw: unknown): void {
-	const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
+	const p = path.join(TMP_AGENT, "config", "omp-verdict.json");
 	fs.mkdirSync(path.dirname(p), { recursive: true });
 	fs.writeFileSync(p, JSON.stringify(raw));
 }
 
 const TIERED_CONFIG = {
 	semanticAdjudication: {
-		tier1Lancet: { enabled: true, modelPath: "~/.cache/pi/lancet-nano", riskyThreshold: 0.85 },
+		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85 },
 		tier2Role: "adjudicator",
 		tier2TimeoutMs: 5000,
 	},
@@ -104,7 +104,7 @@ describe("CodeT5 byte-level BPE tokenizer", () => {
 	});
 
 	test("real-vocab parity fixtures (reference ids from tokenizers==0.23.3)", () => {
-		const dir = process.env.PI_VERDICT_LANCET_DIR;
+		const dir = process.env.OMP_VERDICT_LANCET_DIR;
 		if (!dir) return; // hermetic default: fixtures need the shipped vocab
 		const tok = new CodeT5ByteLevelTokenizer({
 			vocab: JSON.parse(fs.readFileSync(path.join(dir, "vocab.json"), "utf8")),
@@ -176,7 +176,7 @@ describe("Lancet window contract", () => {
 
 describe("Lancet engine input guards", () => {
 	test("oversized payload and empty command return review, never not_flagged", async () => {
-		const dir = process.env.PI_VERDICT_LANCET_DIR;
+		const dir = process.env.OMP_VERDICT_LANCET_DIR;
 		if (!dir) return;
 		const engine = await LancetEngine.load(dir, 1);
 		const tooLong = await engine.triage("x".repeat(8193));
@@ -187,7 +187,7 @@ describe("Lancet engine input guards", () => {
 		expect(empty.reason).toBe("empty-command");
 	});
 	test("commands beyond the 512-token window escalate instead of being truncated", async () => {
-		const dir = process.env.PI_VERDICT_LANCET_DIR;
+		const dir = process.env.OMP_VERDICT_LANCET_DIR;
 		if (!dir) return;
 		const engine = await LancetEngine.load(dir, 1);
 		const longCommand = Array.from({ length: 600 }, (_, i) => `word${i}`).join(" ");
@@ -196,7 +196,7 @@ describe("Lancet engine input guards", () => {
 		expect(r.reason).toBe("input exceeds the 512-token window");
 	});
 	test("unsupported shell returns review", async () => {
-		const dir = process.env.PI_VERDICT_LANCET_DIR;
+		const dir = process.env.OMP_VERDICT_LANCET_DIR;
 		if (!dir) return;
 		const engine = await LancetEngine.load(dir, 1);
 		const r = await engine.triage("ls", "fish" as never);
@@ -204,7 +204,7 @@ describe("Lancet engine input guards", () => {
 		expect(r.reason).toBe("unsupported-shell");
 	});
 	test("reference logits are reproduced exactly (Python runtime parity)", async () => {
-		const dir = process.env.PI_VERDICT_LANCET_DIR;
+		const dir = process.env.OMP_VERDICT_LANCET_DIR;
 		if (!dir) return;
 		const engine = await LancetEngine.load(dir, 2);
 		const cases: Array<[string, number, string]> = [
@@ -713,7 +713,7 @@ describe("/automode tiered status", () => {
 		const state = new SessionState(buildProtectedSet(TMP_AGENT, null));
 		state.reset("/proj");
 		// Exercise the same formatter path the command uses by rendering through the extension.
-		const { default: autoMode } = await import("../extensions/pi-verdict.ts");
+		const { default: autoMode } = await import("../extensions/omp-verdict.ts");
 		const notifies: string[] = [];
 		const commands: Record<string, { handler: (args: string, ctx: unknown) => Promise<void> }> = {};
 		autoMode({
@@ -744,7 +744,7 @@ describe("/automode tiered status", () => {
 describe("config template + handler fail-closed", () => {
 	test("the first-run template exposes the semanticAdjudication block", async () => {
 		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
-		const { default: autoMode } = await import("../extensions/pi-verdict.ts");
+		const { default: autoMode } = await import("../extensions/omp-verdict.ts");
 		autoMode({
 			registerFlag: () => {},
 			getFlag: (name: string) => (name === "auto-mode" ? true : false),
@@ -752,9 +752,9 @@ describe("config template + handler fail-closed", () => {
 			registerCommand: () => {},
 			registerShortcut: () => {},
 		} as never);
-		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8"));
+		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8"));
 		expect(raw.semanticAdjudication).toMatchObject({
-			tier1Lancet: { enabled: true, modelPath: "~/.cache/pi/lancet-nano", riskyThreshold: 0.85 },
+			tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85 },
 			tier2Role: "adjudicator",
 			tier2TimeoutMs: 5000,
 		});
@@ -765,7 +765,7 @@ describe("config template + handler fail-closed", () => {
 			// Point Tier 1 at a nonexistent bundle: load fails fast, call escalates.
 			semanticAdjudication: { tier1Lancet: { enabled: true, modelPath: "/nonexistent/lancet-bundle", riskyThreshold: 0.85 }, tier2Role: "adjudicator", tier2TimeoutMs: 2000 },
 		});
-		const { default: autoMode } = await import("../extensions/pi-verdict.ts");
+		const { default: autoMode } = await import("../extensions/omp-verdict.ts");
 		const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {};
 		const notifies: Array<[string, string]> = [];
 		let confirms = 0;

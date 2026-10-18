@@ -24,8 +24,8 @@ The chat path carries **no numeric confidence** â€” a free-text reply has none â
 ## Resolution order
 
 1. `--auto-mode-model` flag
-2. `PI_AUTO_MODE_MODEL` environment variable
-3. `classifierModel` in `pi-verdict.json`
+2. `OMP_AUTO_MODE_MODEL` environment variable
+3. `classifierModel` in `omp-verdict.json`
 4. the session model (self-reflection)
 
 A spec that does not resolve, or resolves to an entry without configured auth, falls back to the session model with a one-shot warning. Judgment-kind entries are skipped for Tier 2, which needs a generative JSON answer.

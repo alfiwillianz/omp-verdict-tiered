@@ -1,19 +1,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# pi-verdict demo recording (vhs)
+# omp-verdict demo recording (vhs)
 #
 # One-shot environment setup (everything lives on a tmpfs and is disposable;
-# nothing in this file or the environment touches the user's real pi config):
+# nothing in this file or the environment touches the user's real omp config):
 #
 #   # 1. Throwaway demo project (a git repo silences the workspace-history warning)
 #   mkdir -p /Volumes/RamDisk/pv-demo
 #   (cd /Volumes/RamDisk/pv-demo && git init -q && echo "# pv demo" > README.md)
 #
-#   # 2. Isolated pi agentDir with a throwaway model provider
+#   # 2. Isolated omp agentDir with a throwaway model provider
 #   #    (use a short-lived litellm/proxy key — never the real provider config,
 #     #    so nothing internal ever appears on screen)
-#   mkdir -p /Volumes/RamDisk/pi-verdict-demo-agent/{config,extensions}
-#   cp extensions/pi-verdict.ts /Volumes/RamDisk/pi-verdict-demo-agent/extensions/
-#   cat > /Volumes/RamDisk/pi-verdict-demo-agent/models.json <<'JSON'
+#   mkdir -p /Volumes/RamDisk/omp-verdict-demo-agent/{config,extensions}
+#   cp extensions/omp-verdict.ts /Volumes/RamDisk/omp-verdict-demo-agent/extensions/
+#   cat > /Volumes/RamDisk/omp-verdict-demo-agent/models.json <<'JSON'
 #   {
 #     "providers": {
 #       "litellm": {
@@ -26,10 +26,10 @@
 #     }
 #   }
 #   JSON
-#   chmod 600 /Volumes/RamDisk/pi-verdict-demo-agent/models.json
+#   chmod 600 /Volumes/RamDisk/omp-verdict-demo-agent/models.json
 #
-#   # 3. pi settings: quiet startup, thinking hidden (deepseek narrates inline otherwise)
-#   cat > /Volumes/RamDisk/pi-verdict-demo-agent/settings.json <<'JSON'
+#   # 3. omp settings: quiet startup, thinking hidden (deepseek narrates inline otherwise)
+#   cat > /Volumes/RamDisk/omp-verdict-demo-agent/settings.json <<'JSON'
 #   {
 #     "defaultProvider": "litellm",
 #     "defaultModel": "deepseek-v4-flash",
@@ -41,8 +41,8 @@
 #   }
 #   JSON
 #
-#   # 4. pi-verdict rules: the demo scene is a denyPaths ask
-#   cat > /Volumes/RamDisk/pi-verdict-demo-agent/config/pi-verdict.json <<'JSON'
+#   # 4. omp-verdict rules: the demo scene is a denyPaths ask
+#   cat > /Volumes/RamDisk/omp-verdict-demo-agent/config/omp-verdict.json <<'JSON'
 #   {
 #     "builtinDenyFloor": false,
 #     "allow": [],
@@ -54,7 +54,7 @@
 # Then:  cd scripts && vhs demo.tape    (do not touch the keyboard while it runs)
 #
 # Recording gotchas this script already works around:
-#   - Ctrl+L in pi OPENS the model selector — it is NOT clear-screen; use Ctrl+U
+#   - Ctrl+L in omp OPENS the model selector — it is NOT clear-screen; use Ctrl+U
 #   - the model selector can linger across runs; an early Escape dismisses it
 #   - litellm/deepseek self-refuses ~/.ssh/id_* before issuing a tool call, so the
 #     denyPaths scene uses ~/.zshrc instead (harmless, still a protected path)
@@ -62,7 +62,7 @@
 
 Output ../docs/demo.gif
 
-Require pi
+Require omp
 
 Set Shell "zsh"
 Set FontFamily "JetBrainsMono Nerd Font"
@@ -80,7 +80,7 @@ Hide
 Type "cd /Volumes/RamDisk/pv-demo"
 Enter
 Sleep 500ms
-Type "PI_CODING_AGENT_DIR=/Volumes/RamDisk/pi-verdict-demo-agent pi"
+Type "PI_CODING_AGENT_DIR=/Volumes/RamDisk/omp-verdict-demo-agent omp"
 Enter
 Sleep 12s
 # Dismiss any stray dialog that may linger from a prior run (harmless otherwise)

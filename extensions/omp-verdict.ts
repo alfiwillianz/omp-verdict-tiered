@@ -7,7 +7,7 @@
  *
  * Pipeline (tool_call hook):
  *   0. Self-protection layer (ADR-0001, cannot be exempted by any config): write/edit/bash
- *      touching the gate's own files (pi-verdict.json + the installed extension
+ *      touching the gate's own files (omp-verdict.json + the installed extension
  *      copy) → hard deny, reads pass; builtinDenyFloor:false cannot turn it off,
  *      user allow cannot override it. Tamper-detection backstop: watched files are
  *      re-verified before every verdict; if bypassed and modified → differential
@@ -18,7 +18,7 @@
  *      - built-in floor: bash danger regexes + path sensitivity S0-S5 → hard deny
  *        (on by default; builtinDenyFloor:false turns the whole floor off, at your
  *        own risk)
- *      - user rules: allow/deny regexes in config/pi-verdict.json (deny wins over
+ *      - user rules: allow/deny regexes in config/omp-verdict.json (deny wins over
  *        allow); no built-in allowlist (every "always allow" claim is the user's,
  *        #12/audit response)
  *      - denyPaths (ADR-0002): user-declared protected paths; path-semantic
@@ -58,10 +58,10 @@
  *   --auto-mode-model provider/id[:thinking]  classifier model + optional thinking
  *                                   suffix (pi-native --model syntax; default off
  *                                   = thinking explicitly disabled)
- *   PI_AUTO_MODE_MODEL             env-var form of the above
+ *   OMP_AUTO_MODE_MODEL             env-var form of the above
  *   --auto-mode-debug              notify on every verdict (incl. allows)
- *   PI_AUTO_MODE_DEBUG=1           env-var form of the above (kept for compat)
- *   <agentDir>/config/pi-verdict.json   user rules: { allow: [regex], deny: [regex],
+ *   OMP_AUTO_MODE_DEBUG=1           env-var form of the above (kept for compat)
+ *   <agentDir>/config/omp-verdict.json   user rules: { allow: [regex], deny: [regex],
  *                                   denyPaths: [path], builtinDenyFloor,
  *                                   classifierModel, toggleShortcut,
  *                                   semanticAdjudication }
@@ -214,7 +214,7 @@ const pathStartsWith = (child: string, base: string): boolean => fold(child).sta
 // ============================================================================
 // 用户规则:白名单/黑名单(可配置;#12 审计响应)
 //
-// 配置:<agentDir>/config/pi-verdict.json(尊重 PI_CODING_AGENT_DIR 覆盖):
+// 配置:<agentDir>/config/omp-verdict.json(尊重 PI_CODING_AGENT_DIR 覆盖):
 //   { "allow": ["^ls\\b", "^git (status|log|diff)\\b"], "deny": ["rm ", "^/etc/"] }
 // 匹配目标:bash/powershell = 完整命令串;read/write/edit/grep/find/ls = 解析后绝对路径;
 // 其余工具(MCP/自定义)不参与用户规则,恒走分类器。
@@ -259,7 +259,7 @@ function resolveToggleShortcut(raw: unknown): { key: string | null; warning: str
 	const s = raw.trim();
 	if (!s) return { key: null, warning: null };
 	if (!KEY_COMBO_RE.test(s)) {
-		return { key: null, warning: `toggleShortcut "${raw}" is not a valid omp key combo (modifier+key, e.g. "${DEFAULT_TOGGLE_SHORTCUT}") — shortcut not registered; fix config/pi-verdict.json` };
+		return { key: null, warning: `toggleShortcut "${raw}" is not a valid omp key combo (modifier+key, e.g. "${DEFAULT_TOGGLE_SHORTCUT}") — shortcut not registered; fix config/omp-verdict.json` };
 	}
 	return { key: s, warning: null };
 }
@@ -313,7 +313,7 @@ export type { SemanticAdjudicationConfig } from "../src/classifiers/tiered";
  *  single-file install keeps loading: the tiered runtime itself is loaded lazily
  *  and degrades to the legacy classifier path when the package tree is absent. */
 export const DEFAULT_SEMANTIC_ADJUDICATION: SemanticAdjudicationConfig = {
-	tier1Lancet: { enabled: true, modelPath: "~/.cache/pi/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+	tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
 	tier2Role: "adjudicator",
 	tier2TimeoutMs: 5000,
 };
@@ -363,7 +363,7 @@ function agentDirPath(): string {
 }
 
 function userConfigPath(): string {
-	return path.join(agentDirPath(), "config", "pi-verdict.json");
+	return path.join(agentDirPath(), "config", "omp-verdict.json");
 }
 
 const USER_CONFIG_TEMPLATE = `${JSON.stringify({
@@ -393,7 +393,7 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	classifierFallbackModel: null,
 	classifierFallbackMode: "enforce",
 	semanticAdjudication: {
-		tier1Lancet: { enabled: true, modelPath: "~/.cache/pi/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
 		tier2Role: "adjudicator",
 		tier2TimeoutMs: 5000,
 	},
@@ -920,7 +920,7 @@ function hitDenyPaths(toolName: string, input: Record<string, unknown>, cwd: str
 //
 // 门禁自身的完整性不受任何配置豁免:builtinDenyFloor:false 只关危险正则与路径
 // 敏感度,关不掉本层;用户 allow 规则亦不可越过。保护对象:
-//   - <agentDir>/config/pi-verdict.json(用户规则 = 门禁的判定输入)
+//   - <agentDir>/config/omp-verdict.json(用户规则 = 门禁的判定输入)
 //   - 本扩展的安装副本(pi under <agentDir>/extensions/, omp under
 //     plugins/node_modules/<pkg>/ in its config root — install forms listed
 //     with resolveAgentDir; dev checkouts are not in scope)
@@ -960,7 +960,7 @@ function escapeRegExp(s: string): string {
 export function buildProtectedSet(agentDir: string, ownFile: string | null): ProtectedSet {
 	const exact = new Set<string>();
 	const prefixes = new Set<string>();
-	const configPath = path.join(agentDir, "config", "pi-verdict.json");
+	const configPath = path.join(agentDir, "config", "omp-verdict.json");
 	const watchBases: Array<{ file: string; kind: WatchKind }> = [{ file: configPath, kind: "config" }];
 	for (const f of baseForms(configPath)) exact.add(f);
 
@@ -1053,7 +1053,7 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 	const extForms = [...extTargets];
 
 	// bash 命令串特征:文件名字面量(任何拼写变体都含它)+ 安装副本路径变体
-	const bashPatterns: RegExp[] = [/pi-verdict\.json/];
+	const bashPatterns: RegExp[] = [/omp-verdict\.json/];
 	if (extForms.length > 0) {
 		const home = os.homedir();
 		const alts = new Set<string>(extForms.map(escapeRegExp));
@@ -1301,7 +1301,7 @@ function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: 
 		// The matched path goes to `detail` (confirm dialog only): reasons travel back
 		// into the agent context, so plaintext there would leak the declaration.
 		const hit = hitDenyPaths(toolName, input, cwd, denyPathBases);
-		if (hit) return { verdict: "ask", reason: "user-declared protected path (denyPaths) [path withheld; see pi-verdict.json]", detail: hit };
+		if (hit) return { verdict: "ask", reason: "user-declared protected path (denyPaths) [path withheld; see omp-verdict.json]", detail: hit };
 		for (const re of user.allow) {
 			if (re.test(target)) return { verdict: "allow", reason: "user allow rule" };
 		}
@@ -1867,7 +1867,7 @@ export interface FallbackAudit {
 
 /** One adjudication record (#54; #62 widened the surface to protected-path asks and
  *  added the ground-truth fields). Full fidelity on purpose: the file is
- *  local-trust-domain (same as pi-verdict.json, per the ADR-0002 boundary note),
+ *  local-trust-domain (same as omp-verdict.json, per the ADR-0002 boundary note),
  *  so protected-path plaintext is allowed here — it never leaves the machine nor
  *  flows into agent context. */
 export interface AuditRecord {
@@ -2582,7 +2582,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	pi.registerFlag("auto-mode-debug", { description: "Notify every verdict incl. allows", type: "boolean", default: false });
 
 	let enabled = pi.getFlag("auto-mode") !== false;
-	const debug = pi.getFlag("auto-mode-debug") === true || process.env.PI_AUTO_MODE_DEBUG === "1";
+	const debug = pi.getFlag("auto-mode-debug") === true || process.env.OMP_AUTO_MODE_DEBUG === "1";
 	// 会话态与门禁完整性监视:复位清单各归 SessionState.reset / IntegrityWatch.startSession
 	const state = new SessionState(buildProtectedSet(agentDirPath(), OWN_FILE_PATH), undefined, agentDirPath());
 	const integrity = new IntegrityWatch(state.prot.watchBases);
@@ -2590,7 +2590,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	/** 篡改处置呈现:还原 + fail-closed 的本地通知(含文件清单与原因) */
 	function presentTamper(changed: Array<{ file: string; kind: WatchKind }>, ctx: ExtensionContext, cause: string): { block: true; reason: string } {
 		const r = integrity.restoreAndFailClose(changed, cause);
-		ctx.ui.notify(`🛡️ pi-verdict TAMPER DETECTED${cause ? ` (${cause})` : ""}: ${r.files} modified bypassing the gate; restored from session snapshot where possible. Fail-closed for the rest of this session — review the file(s) and restart the session.`, "warning");
+		ctx.ui.notify(`🛡️ omp-verdict TAMPER DETECTED${cause ? ` (${cause})` : ""}: ${r.files} modified bypassing the gate; restored from session snapshot where possible. Fail-closed for the rest of this session — review the file(s) and restart the session.`, "warning");
 		return { block: true, reason: blockedReason("tamper", r.reason) };
 	}
 
@@ -2633,7 +2633,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		}
 		// ask → 人工确认;非交互已在管线内降级,能走到这里的必有 UI
 		if (v.source === "protected-path") {
-			const ok = await ctx.ui.confirm("🛡️ Auto Mode: protected path", `${action}\n\n${v.reason}\n\nProtected path: ${v.detail ?? "(see pi-verdict.json)"}\n\nAllow this access?`);
+			const ok = await ctx.ui.confirm("🛡️ Auto Mode: protected path", `${action}\n\n${v.reason}\n\nProtected path: ${v.detail ?? "(see omp-verdict.json)"}\n\nAllow this access?`);
 			if (ok) {
 				// debug notify 不带 action 行:同上,通知不得携带受保护路径明文
 				if (debug) ctx.ui.notify("🛡️ allow (protected-path confirm)", "info");
@@ -2669,9 +2669,9 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		integrity.startSession();
 		state.audit?.prune(); // #54: converge to the AUDIT_KEEP_SESSIONS most recent files at session start
 		if (report.skipped.length > 0) {
-			ctx.ui.notify(`pi-verdict: skipped ${report.skipped.length} invalid config value(s) in config (${userConfigPath()}): ${report.skipped.join(", ")}`, "warning");
+			ctx.ui.notify(`omp-verdict: skipped ${report.skipped.length} invalid config value(s) in config (${userConfigPath()}): ${report.skipped.join(", ")}`, "warning");
 		}
-		if (report.shortcutWarning) ctx.ui.notify(`pi-verdict: ${report.shortcutWarning}`, "warning");
+		if (report.shortcutWarning) ctx.ui.notify(`omp-verdict: ${report.shortcutWarning}`, "warning");
 		refreshStatus(ctx);
 	});
 
@@ -2684,7 +2684,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		// 运行时校验后断言转入,零依赖约束下不引入 pi 内部类型路径
 		type PiShortcutKey = Parameters<ExtensionAPI["registerShortcut"]>[0];
 		pi.registerShortcut(registeredToggleKey as PiShortcutKey, {
-			description: "Toggle Auto Mode (pi-verdict)",
+			description: "Toggle Auto Mode (omp-verdict)",
 			handler: (ctx) => setMasterSwitch(!enabled, ctx),
 		});
 	}
@@ -2749,7 +2749,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (colon > slash + 1 && THINKING_LEVELS.has(raw.slice(colon + 1))) {
 			return { specPart: raw.slice(0, colon), level: raw.slice(colon + 1) };
 		}
-		if (colon > slash + 1) warnOnce(`pi-verdict: invalid thinking-level suffix "${raw.slice(colon + 1)}" (valid: ${[...THINKING_LEVELS].join("/")}), ignored`);
+		if (colon > slash + 1) warnOnce(`omp-verdict: invalid thinking-level suffix "${raw.slice(colon + 1)}" (valid: ${[...THINKING_LEVELS].join("/")}), ignored`);
 		return { specPart: raw, level: null };
 	}
 
@@ -2776,8 +2776,8 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  lockstep-synchronized ternaries — see CHANGELOG [Unreleased].) */
 	function unavailableNotice(subject: string, raw: string, specPart: string, tail: string): string {
 		return isJevSpec(specPart)
-			? `pi-verdict: ${subject} "${raw}" unavailable — ${JEV_UNAVAILABLE_HINT}${tail}`
-			: `pi-verdict: ${subject} "${raw}" unavailable (not found or no configured auth)${tail}`;
+			? `omp-verdict: ${subject} "${raw}" unavailable — ${JEV_UNAVAILABLE_HINT}${tail}`
+			: `omp-verdict: ${subject} "${raw}" unavailable (not found or no configured auth)${tail}`;
 	}
 
 	/** Shared spec→model resolution for both classifier layers, through omp's
@@ -2806,7 +2806,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	 *  惰性调用(仅灰区),回退警告不会出现在规则已裁决的调用上。 */
 	function resolveClassifier(ctx: ExtensionContext): ResolvedLayer | null {
 		const raw =
-			(pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.PI_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
+			(pi.getFlag("auto-mode-model") as string | undefined) ?? process.env.OMP_AUTO_MODE_MODEL ?? state.userRules.classifierModel;
 		let thinking: ThinkingLevel = "off";
 		if (raw) {
 			const { specPart, level } = parseModelSpec(raw, (msg) => {
@@ -2819,7 +2819,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			if (spec) {
 				if (spec.kind === "native" && level !== null && !warnedNativeSuffix) {
 					warnedNativeSuffix = true;
-					ctx.ui.notify(`pi-verdict: thinking suffix "${level}" has no effect on a judgment model (${specPart} has no reasoning to configure) — ignored`, "warning");
+					ctx.ui.notify(`omp-verdict: thinking suffix "${level}" has no effect on a judgment model (${specPart} has no reasoning to configure) — ignored`, "warning");
 				}
 				return { ...spec, thinking: spec.kind === "native" ? "off" : thinking };
 			}
@@ -2860,7 +2860,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (spec) {
 			if (spec.kind === "native" && level !== null && !warnedNativeSuffix) {
 				warnedNativeSuffix = true;
-				ctx.ui.notify(`pi-verdict: thinking suffix "${level}" has no effect on a judgment model (${specPart} has no reasoning to configure) — ignored`, "warning");
+				ctx.ui.notify(`omp-verdict: thinking suffix "${level}" has no effect on a judgment model (${specPart} has no reasoning to configure) — ignored`, "warning");
 			}
 			return { ...spec, thinking: spec.kind === "native" ? "off" : thinking };
 		}
@@ -2900,7 +2900,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 					if (!warnedLancet) {
 						warnedLancet = true;
 						ctx.ui.notify(
-							`pi-verdict: Tier 1 Lancet-Nano unavailable (${error instanceof Error ? error.message : String(error)}) — shell commands escalate to the model adjudicator; install the bundle with \`bun run setup:lancet\``,
+							`omp-verdict: Tier 1 Lancet-Nano unavailable (${error instanceof Error ? error.message : String(error)}) — shell commands escalate to the model adjudicator; install the bundle with \`bun run setup:lancet\``,
 							"warning",
 						);
 					}
@@ -2925,7 +2925,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 		if (!resolved && !warnedAdjudicator) {
 			warnedAdjudicator = true;
 			ctx.ui.notify(
-				`pi-verdict: no adjudicator model resolved (role "${config.tier2Role}" → "smol" → session model) — escalated calls fail closed to ask`,
+				`omp-verdict: no adjudicator model resolved (role "${config.tier2Role}" → "smol" → session model) — escalated calls fail closed to ask`,
 				"warning",
 			);
 		}
@@ -2958,12 +2958,12 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				// select 双选:选项文案即按钮(避免 confirm 固定 Yes/No 的映射歧义);
 				// 关闭对话框(Esc → undefined)无人背书,取安全侧同 Decline
 				const choice = await ctx.ui.select(
-					"🛡️ pi-verdict: PROTECTED CONFIG CHANGED",
+					"🛡️ omp-verdict: PROTECTED CONFIG CHANGED",
 					[CONFIG_ACCEPT_CHOICE, CONFIG_DECLINE_CHOICE],
 				);
 				if (choice === CONFIG_ACCEPT_CHOICE) {
 					integrity.rebaseline(); // 重建基线
-					ctx.ui.notify("pi-verdict: config change accepted — new baseline taken; applies to new sessions as usual", "info");
+					ctx.ui.notify("omp-verdict: config change accepted — new baseline taken; applies to new sessions as usual", "info");
 				} else {
 					return presentTamper(changed, ctx, choice === undefined ? "config dialog dismissed" : "config change declined by user");
 				}
@@ -2995,7 +2995,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 				: {}),
 		});
 		const auditWarning = state.audit?.drainWarning(); // #54: fail-soft one-shot warning
-		if (auditWarning) ctx.ui.notify(`pi-verdict: ${auditWarning}`, "warning");
+		if (auditWarning) ctx.ui.notify(`omp-verdict: ${auditWarning}`, "warning");
 		// #62: an interactive ask's record is finalized here — exactly one append after the
 		// confirm, carrying the user's answer; a presentVerdict throw still lands the record
 		// (without the answer) and the error propagates unchanged. `undefined` = allowed.
@@ -3010,7 +3010,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 			state.audit?.append({ ...verdict.pendingAudit, userAnswer: presented === undefined ? "allowed" : "declined", answeredAt: new Date().toISOString() });
 			verdict.pendingAudit = undefined;
 			const lateWarning = state.audit?.drainWarning();
-			if (lateWarning) ctx.ui.notify(`pi-verdict: ${lateWarning}`, "warning");
+			if (lateWarning) ctx.ui.notify(`omp-verdict: ${lateWarning}`, "warning");
 		}
 		return presented;
 	});

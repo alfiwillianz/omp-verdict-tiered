@@ -6,7 +6,7 @@ Domain glossary for this project. Terms only — no implementation detail, no de
 
 ### Auto Mode
 
-The gate's core mode: tool-call permission is neither approved by hand each time nor left fully open (omp's default), but decided automatically by the **rule layer + model classifier**. Semantically aligned with Claude Code's auto mode, inverted: Claude Code prompts by default and the classifier auto-approves; omp allows by default and the classifier auto-blocks. Naming split: the product and its persistent artifacts (package, entry file, config file) use the product name `pi-verdict`; runtime interfaces (CLI flags, the `/automode` command, env vars) use the `auto-mode` prefix.
+The gate's core mode: tool-call permission is neither approved by hand each time nor left fully open (omp's default), but decided automatically by the **rule layer + model classifier**. Semantically aligned with Claude Code's auto mode, inverted: Claude Code prompts by default and the classifier auto-approves; omp allows by default and the classifier auto-blocks. Naming split: the product and its persistent artifacts (package, entry file, config file) use the product name `omp-verdict`; runtime interfaces (CLI flags, the `/automode` command, env vars) use the `auto-mode` prefix.
 
 ### Master switch
 
@@ -26,7 +26,7 @@ The gate's user-facing channel, carrying only **judgments worth attention**: den
 
 ### Verdict audit records
 
-Opt-in JSONL decision records for gray-zone adjudication (#54). Enabled by `"audit": true` in `pi-verdict.json`; each record is self-contained (timestamp, session id, cwd, model, tool and input, action line, thinking level, full transcript, raw response, parsed verdict, source, degraded flag), written per session to `<agentDir>/verdicts/<sessionId>.jsonl`, keeping the 20 most recent files. Since #62 the audit surface includes protected-path asks — the user's answer is feedback on the denyPaths declaration quality — and interactive asks record ground truth (`userAnswer` / `answeredAt` after the confirm resolves; `ts` stays adjudication time). Rule-layer allow/deny is still not recorded. Observe-only: recording never changes a verdict, and write failures stay fail-soft with a one-shot warning.
+Opt-in JSONL decision records for gray-zone adjudication (#54). Enabled by `"audit": true` in `omp-verdict.json`; each record is self-contained (timestamp, session id, cwd, model, tool and input, action line, thinking level, full transcript, raw response, parsed verdict, source, degraded flag), written per session to `<agentDir>/verdicts/<sessionId>.jsonl`, keeping the 20 most recent files. Since #62 the audit surface includes protected-path asks — the user's answer is feedback on the denyPaths declaration quality — and interactive asks record ground truth (`userAnswer` / `answeredAt` after the confirm resolves; `ts` stays adjudication time). Rule-layer allow/deny is still not recorded. Observe-only: recording never changes a verdict, and write failures stay fail-soft with a one-shot warning.
 
 ### Audit redaction
 
@@ -42,7 +42,7 @@ The normalization discipline for path rules: one target yields **every canonical
 
 ### User rules
 
-allow/deny regexes in `<agentDir>/config/pi-verdict.json`: deny beats allow, and a deny match blocks. Match targets are the full bash command string and file-tool absolute paths. `builtinDenyFloor: false` turns the whole built-in floor off (at the user's risk). Every "always allow" claim is the user's, never the author's.
+allow/deny regexes in `<agentDir>/config/omp-verdict.json`: deny beats allow, and a deny match blocks. Match targets are the full bash command string and file-tool absolute paths. `builtinDenyFloor: false` turns the whole built-in floor off (at the user's risk). Every "always allow" claim is the user's, never the author's.
 
 ### agentDir self-anchoring
 

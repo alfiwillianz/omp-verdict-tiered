@@ -1,8 +1,8 @@
 # Security Design Principles
 
-This document states the security design principles behind pi-verdict (omp fork) and how they map to what is actually shipped. It complements the [pipeline](../README.md#pipeline) section in the README and the [ADRs](./adr/). Where a principle describes a direction rather than shipped behavior, it says so explicitly — this document deliberately makes no claims the implementation does not back.
+This document states the security design principles behind omp-verdict (omp fork) and how they map to what is actually shipped. It complements the [pipeline](../README.md#pipeline) section in the README and the [ADRs](./adr/). Where a principle describes a direction rather than shipped behavior, it says so explicitly — this document deliberately makes no claims the implementation does not back.
 
-pi-verdict is a **fail-closed, layered permission gate** for coding agents. It is not a sandbox and does not attempt to formally prove that arbitrary agent-generated programs are safe.
+omp-verdict is a **fail-closed, layered permission gate** for coding agents. It is not a sandbox and does not attempt to formally prove that arbitrary agent-generated programs are safe.
 
 ## Principles
 
@@ -58,7 +58,7 @@ The objective is to maximize useful automation while minimizing unsafe automatic
 
 ### 12. A permission gate, not a sandbox
 
-pi-verdict makes tool authorization safer and more explainable; it provides no OS-level isolation. For strong guarantees, stack it with what it deliberately is not: OS sandboxing, container isolation, filesystem/network restrictions, least-privilege execution. The strongest model is a *policy gate + semantic adjudication + technical isolation* — never any single mechanism.
+omp-verdict makes tool authorization safer and more explainable; it provides no OS-level isolation. For strong guarantees, stack it with what it deliberately is not: OS sandboxing, container isolation, filesystem/network restrictions, least-privilege execution. The strongest model is a *policy gate + semantic adjudication + technical isolation* — never any single mechanism.
 
 ## Directions (not yet shipped)
 
@@ -85,6 +85,6 @@ pi-verdict makes tool authorization safer and more explainable; it provides no O
               allow / ask / deny     (ask → human; non-interactive → deny)
 ```
 
-Optionally stacked *outside* the gate: OS sandboxing / container / filesystem & network restrictions — pi-verdict complements isolation, it does not replace it.
+Optionally stacked *outside* the gate: OS sandboxing / container / filesystem & network restrictions — omp-verdict complements isolation, it does not replace it.
 
 > **Core principle: deterministic controls for what must never be allowed, LLMs for what syntax alone cannot decide, technical isolation to limit the consequences of inevitable mistakes.**

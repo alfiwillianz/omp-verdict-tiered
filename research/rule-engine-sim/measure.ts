@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const SRC = fs.readFileSync(path.join(process.cwd(), "extensions/pi-verdict.ts"), "utf8");
+const SRC = fs.readFileSync(path.join(process.cwd(), "extensions/omp-verdict.ts"), "utf8");
 const start = SRC.indexOf("const BASH_SAFE_UNCONDITIONAL");
 const end = SRC.indexOf("// ============================================================================\n// 规则层:文件路径敏感度");
 const js = new Bun.Transpiler({ loader: "ts" }).transformSync(SRC.slice(start, end));

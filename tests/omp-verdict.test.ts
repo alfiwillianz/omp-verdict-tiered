@@ -1,5 +1,5 @@
 /**
- * pi-verdict 扩展桩测试:内置 floor / 用户规则优先级 / 分类器重试 / 命令语义
+ * omp-verdict 扩展桩测试:内置 floor / 用户规则优先级 / 分类器重试 / 命令语义
  * 全部离线:mock ExtensionAPI/ExtensionContext,无网络、无真实模型。
  * 用户规则经 PI_CODING_AGENT_DIR 指向临时目录的真实 JSON 配置驱动(非注入 mock)。
  * 会话装配统一走 session(cfg, opts)(配置 → harness → 装载,顺序约束内化);
@@ -9,11 +9,11 @@ import { describe, test, expect, beforeAll, beforeEach, afterEach, afterAll } fr
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import autoMode, { setTmpdirBasesForTests, adjudicate, bashPathTokens, BASH_MAX_MATCH_LEN, BASH_PATH_TOKENS, bindCompletion, buildProtectedSet, computeTmpdirBases, isProtectedWritePath, redactSecrets, resolveAgentDir, SessionState } from "../extensions/pi-verdict.ts";
+import autoMode, { setTmpdirBasesForTests, adjudicate, bashPathTokens, BASH_MAX_MATCH_LEN, BASH_PATH_TOKENS, bindCompletion, buildProtectedSet, computeTmpdirBases, isProtectedWritePath, redactSecrets, resolveAgentDir, SessionState } from "../extensions/omp-verdict.ts";
 
 // ── 桩设施 ──────────────────────────────────────────────
 
-const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "pi-verdict-test-"));
+const TMP_AGENT = fs.mkdtempSync(path.join(os.tmpdir(), "omp-verdict-test-"));
 let config: { allow: string[]; deny: string[] } = { allow: [], deny: [] };
 
 interface Harness {
@@ -61,7 +61,7 @@ function jevAnswer(text: string): any {
  *  classifierModel, so suffixed specs pass the SAME spec here. beforeEach in each
  *  native-using describe deletes the env (no cross-test leakage). */
 const jevLayer = (h: Harness, spec: string = "typesafe/jev-latest"): void => {
-	process.env.PI_AUTO_MODE_MODEL = spec;
+	process.env.OMP_AUTO_MODE_MODEL = spec;
 	h.resolveMap = { ...h.resolveMap, "typesafe/jev-latest": { id: "jev-latest", api: "typesafe", provider: "typesafe" } };
 };
 
@@ -135,8 +135,8 @@ function makeHarness(cwd: string = "/proj"): Harness {
 
 	h.install = (opts?: { flag?: boolean; debug?: boolean; modelFlag?: string; completionHost?: { complete: any } }) => {
 		flags = { "auto-mode": opts?.flag ?? true, "auto-mode-debug": opts?.debug ?? false, ...(opts?.modelFlag ? { "auto-mode-model": opts.modelFlag } : {}) };
-		const prev = process.env.PI_AUTO_MODE_DEBUG;
-		if (opts?.debug) process.env.PI_AUTO_MODE_DEBUG = "1"; else delete process.env.PI_AUTO_MODE_DEBUG;
+		const prev = process.env.OMP_AUTO_MODE_DEBUG;
+		if (opts?.debug) process.env.OMP_AUTO_MODE_DEBUG = "1"; else delete process.env.OMP_AUTO_MODE_DEBUG;
 		autoMode({
 			registerFlag: (n: string, d: any) => { if (!(n in flags)) flags[n] = d.default; },
 			getFlag: (n: string) => flags[n],
@@ -144,7 +144,7 @@ function makeHarness(cwd: string = "/proj"): Harness {
 			registerCommand: (n: string, c: any) => { commands[n] = c; },
 			registerShortcut: (k: string, o: any) => { shortcuts[k] = o; },
 		} as any, { completionHost: opts?.completionHost ?? defaultCompletionHost, getJudge: judgeForHarness });
-		if (prev !== undefined) process.env.PI_AUTO_MODE_DEBUG = prev; else delete process.env.PI_AUTO_MODE_DEBUG;
+		if (prev !== undefined) process.env.OMP_AUTO_MODE_DEBUG = prev; else delete process.env.OMP_AUTO_MODE_DEBUG;
 	};
 	return h as Harness;
 }
@@ -163,7 +163,7 @@ afterAll(() => { delete process.env.PI_CODING_AGENT_DIR; });
 
 function setConfig(cfg: { allow?: string[]; deny?: string[]; denyPaths?: unknown[]; ignoreTools?: unknown[]; builtinDenyFloor?: boolean; classifierModel?: string | null; toggleShortcut?: string | null; audit?: boolean; auditRedactSecrets?: unknown; notifyAllows?: boolean; classifierFallbackModel?: string | null; classifierFallbackConfidence?: unknown; classifierMinConfidence?: unknown; classifierFallbackMode?: unknown }, invalid?: string[]): void {
 	config = { allow: cfg.allow ?? [], deny: cfg.deny ?? [] };
-	const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
+	const p = path.join(TMP_AGENT, "config", "omp-verdict.json");
 	fs.mkdirSync(path.dirname(p), { recursive: true });
 	const raw: Record<string, unknown> = { ...config };
 	if (cfg.classifierModel !== undefined) raw.classifierModel = cfg.classifierModel;
@@ -292,9 +292,9 @@ describe("user rules (deny > allow > gray)", () => {
 		expect(h.calls.length).toBe(0);
 	});
 	test("config template contains the ignoreTools starter list", () => {
-		fs.rmSync(path.join(TMP_AGENT, "config", "pi-verdict.json"));
+		fs.rmSync(path.join(TMP_AGENT, "config", "omp-verdict.json"));
 		const h = makeHarness(); h.install(); // first run → template
-		const tpl = fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8");
+		const tpl = fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8");
 		for (const t of ["todo", "ask_user_question", "memory_write", "memory_search"]) expect(tpl).toContain(`"${t}"`);
 		expect(tpl).not.toContain("memory_forget"); // deletion semantics stay adjudicated
 	});
@@ -315,7 +315,7 @@ describe("user rules (deny > allow > gray)", () => {
 	});
 	// #25 (F6): a malformed config must not silently disarm the user's rules
 	test("malformed config JSON warns at session_start; floor and self-protection unaffected", async () => {
-		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
+		const p = path.join(TMP_AGENT, "config", "omp-verdict.json");
 		fs.writeFileSync(p, '{"allow": ["^ls\\b",}');
 		const h = makeHarness(); h.install();
 		await h.handlers["session_start"]({}, h.ctx);
@@ -365,7 +365,7 @@ describe("user rules (deny > allow > gray)", () => {
 	test("first run generates config template", async () => {
 		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
 		const h = session({}); // 触发 loadUserRules → 生成模板
-		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
+		const p = path.join(TMP_AGENT, "config", "omp-verdict.json");
 		expect(fs.existsSync(p)).toBe(true);
 	});
 });
@@ -472,8 +472,8 @@ describe("path floor dual-form matching (#20)", () => {
 
 	test("isProtectedWritePath: symlink alias onto a nonexistent target inside a protected package dir hits via ancestor-realpath form", async () => {
 		await withTempDir(".pv-t20-agent-", async (agent) => {
-				// npm package-directory install shape: <agentDir>/extensions/pi-verdict/index.ts
-				const pkgDir = path.join(agent, "extensions", "pi-verdict");
+				// npm package-directory install shape: <agentDir>/extensions/omp-verdict/index.ts
+				const pkgDir = path.join(agent, "extensions", "omp-verdict");
 				fs.mkdirSync(pkgDir, { recursive: true });
 				fs.writeFileSync(path.join(pkgDir, "index.ts"), "x");
 				const prot = buildProtectedSet(agent, path.join(pkgDir, "index.ts"));
@@ -687,7 +687,7 @@ describe("classifier model resolution", () => {
 // ── 3b. classifier mode feedback (#81: jev vs LLM differences surface as runtime feedback) ──
 
 describe("classifier mode feedback (#81)", () => {
-	beforeEach(() => { delete process.env.PI_AUTO_MODE_MODEL; }); // jevLayer's env channel is per-test only
+	beforeEach(() => { delete process.env.OMP_AUTO_MODE_MODEL; }); // jevLayer's env channel is per-test only
 	test("floor on a chat layer is inert: a low-confidence-looking reason never demotes", async () => {
 		clearAudit();
 		const h = session({ audit: true, classifierMinConfidence: 50 }); // no classifierModel → self-reflection (chat)
@@ -750,7 +750,7 @@ describe("classifier mode feedback (#81)", () => {
 		expect(recs[0].thinking).toBeNull(); // decisions models: parsed, sent, dropped → recorded as null
 		expect(recs[0].model).toBe("jev-latest");
 		// LLM contrast: a suffix on an LLM spec stays meaningful — the audit keeps it
-		delete process.env.PI_AUTO_MODE_MODEL; // drop jevLayer's env — the config channel takes over
+		delete process.env.OMP_AUTO_MODE_MODEL; // drop jevLayer's env — the config channel takes over
 		const h2 = session({ audit: true, classifierModel: "mock/glm:low" });
 		h2.findMap = { "mock/glm": { id: "glm" } };
 		h2.responses = [{ text: "<verdict>allow</verdict> fine" }];
@@ -922,7 +922,7 @@ describe("toggle shortcut", () => {
 	test("config template contains toggleShortcut with default key", () => {
 		fs.rmSync(path.join(TMP_AGENT, "config"), { recursive: true, force: true });
 		const h = makeHarness(); h.install(); // 无既有配置 → loadUserRules 生成模板
-		const raw = fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8");
+		const raw = fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8");
 		expect(raw).toContain("toggleShortcut");
 		expect(raw).toContain("ctrl+shift+a");
 		expect(raw).not.toContain("_hint"); // #72: the embedded hint is gone; docs/configuration.md is the reference
@@ -946,22 +946,22 @@ describe("debug annotations", () => {
 // ── 8. 自保护层(ADR-0001:不可豁免的 deny) ─────────────
 
 describe("self-protection layer (ADR-0001)", () => {
-	const CFG = () => path.join(TMP_AGENT, "config", "pi-verdict.json");
+	const CFG = () => path.join(TMP_AGENT, "config", "omp-verdict.json");
 
-	test("write to pi-verdict.json → deny, zero model calls", async () => {
+	test("write to omp-verdict.json → deny, zero model calls", async () => {
 		const h = session({});
 		const r = await toolCall(h, "write", { path: CFG(), content: "{\"deny\":[],\"allow\":[\".*\"]}" });
 		expect(r?.block).toBe(true);
 		expect(r.reason).toContain("self-protection");
 		expect(h.calls.length).toBe(0);
 	});
-	test("edit to pi-verdict.json → deny", async () => {
+	test("edit to omp-verdict.json → deny", async () => {
 		const h = session({});
 		const r = await toolCall(h, "edit", { path: CFG(), oldText: "a", newText: "b" });
 		expect(r?.block).toBe(true);
 		expect(r.reason).toContain("self-protection");
 	});
-	test("write via symlink to pi-verdict.json → deny (realpath 归一)", async () => {
+	test("write via symlink to omp-verdict.json → deny (realpath 归一)", async () => {
 		const link = path.join(TMP_AGENT, "link-to-config.json");
 		try { fs.rmSync(link); } catch { /* 不存在 */ }
 		fs.symlinkSync(CFG(), link);
@@ -974,7 +974,7 @@ describe("self-protection layer (ADR-0001)", () => {
 		const h = session({});
 		// cwd 指向 config 所在目录,相对路径直接命中
 		h.ctx.cwd = path.join(TMP_AGENT, "config");
-		const r = await toolCall(h, "write", { path: "pi-verdict.json", content: "x" });
+		const r = await toolCall(h, "write", { path: "omp-verdict.json", content: "x" });
 		expect(r?.block).toBe(true);
 		expect(r.reason).toContain("self-protection");
 	});
@@ -985,12 +985,12 @@ describe("self-protection layer (ADR-0001)", () => {
 		expect(h.calls.length).toBe(0);
 	});
 	test("user allow rule cannot override self-protection", async () => {
-		const h = session({ allow: ["pi-verdict", ".*"] });
+		const h = session({ allow: ["omp-verdict", ".*"] });
 		const r = await toolCall(h, "write", { path: CFG(), content: "x" });
 		expect(r?.block).toBe(true);
 		expect(h.calls.length).toBe(0);
 	});
-	test("read of pi-verdict.json passes self-protection (读放行,走正常管线)", async () => {
+	test("read of omp-verdict.json passes self-protection (读放行,走正常管线)", async () => {
 		const h = session({});
 		h.responses = [{ text: "<verdict>allow</verdict> ok" }]; // TMP 在 /var 下 → S1 读灰区,交分类器
 		const r = await toolCall(h, "read", { path: CFG() });
@@ -1006,7 +1006,7 @@ describe("self-protection layer (ADR-0001)", () => {
 	});
 	test("bash with $PI_CODING_AGENT_DIR spelling → deny", async () => {
 		const h = session({});
-		const r = await toolCall(h, "bash", { command: "cat $PI_CODING_AGENT_DIR/config/pi-verdict.json" });
+		const r = await toolCall(h, "bash", { command: "cat $PI_CODING_AGENT_DIR/config/omp-verdict.json" });
 		expect(r?.block).toBe(true);
 		expect(r.reason).toContain("self-protection");
 	});
@@ -1023,7 +1023,7 @@ describe("buildProtectedSet (pure)", () => {
 	// #26: npm dir install form — tamper watch must not lag behind write protection
 	test("npm dir install form: tamper watch covers the whole package dir, excluding node_modules/.git", async () => {
 		await withTempDir(".pv-t26-", async (agent) => {
-				const pkgDir = path.join(agent, "extensions", "pi-verdict");
+				const pkgDir = path.join(agent, "extensions", "omp-verdict");
 				fs.mkdirSync(path.join(pkgDir, "sub"), { recursive: true });
 				fs.mkdirSync(path.join(pkgDir, "node_modules", "dep"), { recursive: true });
 				fs.mkdirSync(path.join(pkgDir, ".git"), { recursive: true });
@@ -1049,23 +1049,23 @@ describe("buildProtectedSet (pure)", () => {
 	});
 
 	test("single-file install form: exact own file + bash variants", () => {
-		const own = path.join(TMP_AGENT, "extensions", "pi-verdict.ts");
+		const own = path.join(TMP_AGENT, "extensions", "omp-verdict.ts");
 		fs.mkdirSync(path.dirname(own), { recursive: true });
 		fs.writeFileSync(own, "// stub");
 		const s = buildProtectedSet(TMP_AGENT, own);
 		const ownReal = fs.realpathSync(own); // macOS TMP 在 /var → realpath 为 /private/var
 		expect(s.exact).toContain(ownReal);
 		expect(s.bashPatterns.some((re) => re.test(`echo x > ${ownReal}`))).toBe(true);
-		expect(s.bashPatterns.some((re) => re.test("cat $PI_CODING_AGENT_DIR/extensions/pi-verdict.ts"))).toBe(true);
+		expect(s.bashPatterns.some((re) => re.test("cat $PI_CODING_AGENT_DIR/extensions/omp-verdict.ts"))).toBe(true);
 		expect(s.watchBases).toContainEqual({ file: own, kind: "extension" });
-		expect(s.watchBases).toContainEqual({ file: path.join(TMP_AGENT, "config", "pi-verdict.json"), kind: "config" });
+		expect(s.watchBases).toContainEqual({ file: path.join(TMP_AGENT, "config", "omp-verdict.json"), kind: "config" });
 	});
 	test("npm dir install form: whole package dir as prefix", () => {
-		const own = path.join(TMP_AGENT, "extensions", "pi-verdict", "extensions", "pi-verdict.ts");
+		const own = path.join(TMP_AGENT, "extensions", "omp-verdict", "extensions", "omp-verdict.ts");
 		fs.mkdirSync(path.dirname(own), { recursive: true });
 		fs.writeFileSync(own, "// stub");
 		const s = buildProtectedSet(TMP_AGENT, own);
-		const pkg = path.join(TMP_AGENT, "extensions", "pi-verdict");
+		const pkg = path.join(TMP_AGENT, "extensions", "omp-verdict");
 		expect(s.prefixes).toContain(fs.realpathSync(pkg));
 		expect(isProtectedWritePath(path.join(pkg, "package.json"), "/proj", s)).toBe(true);
 		expect(isProtectedWritePath(path.join(pkg, "sub/dir/x.ts"), "/proj", s)).toBe(true);
@@ -1076,14 +1076,14 @@ describe("buildProtectedSet (pure)", () => {
 		// agentDir (<root>/agent) must still shield <root>/plugins/node_modules/<pkg>
 		await withTempDir(".pv-omp181-", async (root) => {
 				const agent = path.join(root, "agent");
-				const pkg = path.join(root, "plugins", "node_modules", "pi-verdict");
+				const pkg = path.join(root, "plugins", "node_modules", "omp-verdict");
 				fs.mkdirSync(path.join(pkg, "extensions"), { recursive: true });
 				fs.writeFileSync(path.join(pkg, "package.json"), "{}");
-				fs.writeFileSync(path.join(pkg, "extensions", "pi-verdict.ts"), "// stub");
-				const s = buildProtectedSet(agent, path.join(pkg, "extensions", "pi-verdict.ts"));
+				fs.writeFileSync(path.join(pkg, "extensions", "omp-verdict.ts"), "// stub");
+				const s = buildProtectedSet(agent, path.join(pkg, "extensions", "omp-verdict.ts"));
 				expect(s.prefixes).toContain(fs.realpathSync(pkg));
 				expect(isProtectedWritePath(path.join(pkg, "package.json"), "/proj", s)).toBe(true);
-				expect(isProtectedWritePath(path.join(pkg, "extensions", "pi-verdict.ts"), "/proj", s)).toBe(true);
+				expect(isProtectedWritePath(path.join(pkg, "extensions", "omp-verdict.ts"), "/proj", s)).toBe(true);
 				expect(s.watchBases).toContainEqual({ file: path.join(pkg, "package.json"), kind: "extension" });
 				// neighbor packages under the same node_modules stay unprotected
 				expect(isProtectedWritePath(path.join(root, "plugins", "node_modules", "other-pkg", "x.ts"), "/proj", s)).toBe(false);
@@ -1095,13 +1095,13 @@ describe("buildProtectedSet (pure)", () => {
 		await withTempDir(".pv-omp181s-", async (root) => {
 				const agent = path.join(root, "agent");
 				const scope = path.join(root, "plugins", "node_modules", "@jesset");
-				const pkg = path.join(scope, "pi-verdict");
+				const pkg = path.join(scope, "omp-verdict");
 				fs.mkdirSync(path.join(pkg, "extensions"), { recursive: true });
 				fs.mkdirSync(path.join(scope, "other-pkg"), { recursive: true });
 				fs.writeFileSync(path.join(pkg, "package.json"), "{}");
-				fs.writeFileSync(path.join(pkg, "extensions", "pi-verdict.ts"), "// stub");
+				fs.writeFileSync(path.join(pkg, "extensions", "omp-verdict.ts"), "// stub");
 				fs.writeFileSync(path.join(scope, "other-pkg", "x.ts"), "x");
-				const s = buildProtectedSet(agent, path.join(pkg, "extensions", "pi-verdict.ts"));
+				const s = buildProtectedSet(agent, path.join(pkg, "extensions", "omp-verdict.ts"));
 				expect(s.prefixes).toContain(fs.realpathSync(pkg));
 				expect(isProtectedWritePath(path.join(pkg, "package.json"), "/proj", s)).toBe(true);
 				expect(isProtectedWritePath(path.join(scope, "other-pkg", "x.ts"), "/proj", s)).toBe(false);
@@ -1109,17 +1109,17 @@ describe("buildProtectedSet (pure)", () => {
 		}, os.homedir());
 	});
 	test("dev checkout (outside agentDir/extensions) → 不保护扩展文件,仅配置", () => {
-		const s = buildProtectedSet(TMP_AGENT, "/repo/extensions/pi-verdict.ts");
-		expect(s.exact).not.toContain("/repo/extensions/pi-verdict.ts");
+		const s = buildProtectedSet(TMP_AGENT, "/repo/extensions/omp-verdict.ts");
+		expect(s.exact).not.toContain("/repo/extensions/omp-verdict.ts");
 		expect(s.prefixes.every((p) => !p.startsWith("/repo/"))).toBe(true); // 扩展无前缀;#54 后 verdicts 前缀恒在
-		expect(isProtectedWritePath(path.join(TMP_AGENT, "config", "pi-verdict.json"), "/proj", s)).toBe(true);
+		expect(isProtectedWritePath(path.join(TMP_AGENT, "config", "omp-verdict.json"), "/proj", s)).toBe(true);
 	});
 });
 
 // ── 9. 变更检测(ADR-0001:差分处置 D) ──────────────────
 
 describe("tamper detection (ADR-0001, differential disposal)", () => {
-	const CFG = () => path.join(TMP_AGENT, "config", "pi-verdict.json");
+	const CFG = () => path.join(TMP_AGENT, "config", "omp-verdict.json");
 
 	test("interactive + Accept:用户会话中合法编辑 → 一次双选重建基线,会话照常,编辑保留", async () => {
 		const h = session({});
@@ -1241,7 +1241,7 @@ describe("denyPaths (ADR-0002)", () => {
 		// write/edit use a home-based base: SENS lives under os.tmpdir() → /var/... (S1
 		// system dir), where a write is floor-denied BEFORE denyPaths (ADR-0002 priority:
 		// built-in floor deny > denyPaths ask) — the block, not a confirm, would fire
-		const homeBase = path.join(os.homedir(), ".pi-verdict-denypaths-wtest");
+		const homeBase = path.join(os.homedir(), ".omp-verdict-denypaths-wtest");
 		for (const [tool, base, input] of [
 			["write", homeBase, { path: path.join(homeBase, "new.md"), content: "x" }],
 			["edit", homeBase, { path: path.join(homeBase, "secret.md") }],
@@ -1260,8 +1260,8 @@ describe("denyPaths (ADR-0002)", () => {
 		// lexical bases (nonexistent targets): ~/ and $HOME/ under the real home, /proj-relative
 		const home = os.homedir();
 		const cases: Array<[string[], string, string]> = [
-			[[`${home}/.pi-verdict-denypaths-test`], "~/.pi-verdict-denypaths-test/a.md", "read"],
-			[[`${home}/.pi-verdict-denypaths-test`], "$HOME/.pi-verdict-denypaths-test/a.md", "read"],
+			[[`${home}/.omp-verdict-denypaths-test`], "~/.omp-verdict-denypaths-test/a.md", "read"],
+			[[`${home}/.omp-verdict-denypaths-test`], "$HOME/.omp-verdict-denypaths-test/a.md", "read"],
 			// bash absolute token + ../ variant + glob + heredoc inline body
 			[["/proj/sensitive-rel"], "cat /proj/sensitive-rel/x.md", "bash"],
 			[["/proj/sensitive-rel"], "cat /proj/ok/../sensitive-rel/x.md", "bash"],
@@ -1368,7 +1368,7 @@ describe("denyPaths (ADR-0002)", () => {
 	});
 
 	test("omitted path: user deny on the cwd still wins (deny before denyPaths)", async () => {
-		const h = session({ deny: ["pi-verdict-test"], denyPaths: [SENS] }, { cwd: TMP_AGENT });
+		const h = session({ deny: ["omp-verdict-test"], denyPaths: [SENS] }, { cwd: TMP_AGENT });
 		const r = await toolCall(h, "grep", { pattern: "secret" });
 		expect(h.confirms).toBe(0);
 		expect(r?.block).toBe(true);
@@ -1431,15 +1431,15 @@ describe("denyPaths (ADR-0002)", () => {
 	});
 
 	test("config template contains the denyPaths field", () => {
-		fs.rmSync(path.join(TMP_AGENT, "config", "pi-verdict.json"));
+		fs.rmSync(path.join(TMP_AGENT, "config", "omp-verdict.json"));
 		const h = makeHarness(); h.install(); // first run → template
-		expect(fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8")).toContain("denyPaths");
+		expect(fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8")).toContain("denyPaths");
 	});
 
 	test("template ships the starter denyPaths list, active from the next session (#49)", async () => {
-		fs.rmSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), { force: true });
+		fs.rmSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), { force: true });
 		const bootstrap = makeHarness(); bootstrap.install(); // first run → template, empty rules by design
-		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "pi-verdict.json"), "utf8"));
+		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8"));
 		expect(raw.denyPaths).toEqual(["~/.ssh/", "~/.profile", "~/.gnupg", "~/.mc", "~/.zshrc", "~/.bashrc"]);
 		// second session: the starter list is live, not decorative — reading a
 		// starter-declared rc file asks (empty rules in the bootstrap session
@@ -1489,8 +1489,8 @@ describe("denyPaths (ADR-0002)", () => {
 
 	test("quoted \"$HOME/…\" spelling still hits (quotes are not part of the token)", async () => {
 		const home = os.homedir();
-		const h = session({ denyPaths: [path.join(home, ".pi-verdict-denypaths-test")] });
-		await toolCall(h, "bash", { command: `cat "$HOME/.pi-verdict-denypaths-test/a.md"` });
+		const h = session({ denyPaths: [path.join(home, ".omp-verdict-denypaths-test")] });
+		await toolCall(h, "bash", { command: `cat "$HOME/.omp-verdict-denypaths-test/a.md"` });
 		expect(h.confirms).toBe(1);
 		expect(h.calls.length).toBe(0);
 	});
@@ -1788,7 +1788,7 @@ describe("agent-facing block reason form (#53)", () => {
 	const HEAD = "BLOCKED — this action did NOT run. Reason: ";
 	const TAIL = ". Report the block to the user; never claim it succeeded or completed.";
 	const SENS = path.join(TMP_AGENT, "sensitive-53");
-	const CFG = () => path.join(TMP_AGENT, "config", "pi-verdict.json");
+	const CFG = () => path.join(TMP_AGENT, "config", "omp-verdict.json");
 	fs.mkdirSync(SENS, { recursive: true });
 
 	test("classifier with empty reason → fallback detail, exact canonical form", async () => {
@@ -2315,11 +2315,11 @@ describe("confidence floor + cascade (#67)", () => {
 	const JEV_DENY_29 = "<verdict>deny</verdict> jev: deny 64% (confidence 29%; allow 36%)";
 	const JEV_ASK_49 = "<verdict>ask</verdict> jev: ask 51% (confidence 49%; allow 40%, deny 10%)";
 
-	beforeEach(() => { delete process.env.PI_AUTO_MODE_MODEL; }); // jevLayer's env channel is per-test only
+	beforeEach(() => { delete process.env.OMP_AUTO_MODE_MODEL; }); // jevLayer's env channel is per-test only
 	beforeAll(clearAudit);
 	afterAll(() => {
 		clearAudit();
-		delete process.env.PI_AUTO_MODE_MODEL;
+		delete process.env.OMP_AUTO_MODE_MODEL;
 	});
 
 	test("floor off by default: low-confidence verdicts stay autonomous, fallback idle", async () => {
@@ -2774,7 +2774,7 @@ describe("notifyAllows (#60)", () => {
 
 	test("invalid value falls back to off", async () => {
 		const h = makeHarness();
-		const p = path.join(TMP_AGENT, "config", "pi-verdict.json");
+		const p = path.join(TMP_AGENT, "config", "omp-verdict.json");
 		fs.mkdirSync(path.dirname(p), { recursive: true });
 		fs.writeFileSync(p, JSON.stringify({ notifyAllows: "yes" }));
 		h.install();
@@ -2874,51 +2874,51 @@ describe("agentDir self-anchoring (#35)", () => {
 	const HOME = os.homedir();
 
 	test("omp npm install form anchors to the omp agent dir", () => {
-		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "pi-verdict", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "omp-verdict", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("omp scoped-package form (@scope/pkg) anchors the same way", () => {
-		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "@jesset", "pi-verdict", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "@jesset", "omp-verdict", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("omp 18.1+ layout (plugins/ is a sibling of agent/) anchors to the omp agent dir", () => {
 		// omp 18.1+ installs npm plugins under <configRoot>/plugins/node_modules/,
 		// NOT under agent/ — verified against omp 18.1.3 (getPluginsDir)
-		const own = path.join(HOME, ".omp", "plugins", "node_modules", "pi-verdict", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "plugins", "node_modules", "omp-verdict", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("omp 18.1+ scoped-package form anchors the same way", () => {
-		const own = path.join(HOME, ".omp", "plugins", "node_modules", "@jesset", "pi-verdict", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "plugins", "node_modules", "@jesset", "omp-verdict", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("plain omp extension dir anchors to the omp agent dir", () => {
-		const own = path.join(HOME, ".omp", "agent", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "agent", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("project-local .omp extension dir anchors to the omp agent dir", () => {
-		const own = path.join(HOME, ".omp", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("PI_CODING_AGENT_DIR wins over anchoring", () => {
-		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "pi-verdict", "extensions", "pi-verdict.ts");
+		const own = path.join(HOME, ".omp", "agent", "plugins", "node_modules", "omp-verdict", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(own, HOME, "/custom/agent")).toBe("/custom/agent");
 	});
 
 	test("a ~/.pi tree existing must not redirect an omp-anchored run", () => {
 		// The resolver never probes for host trees; presence of ~/.pi is irrelevant
 		// when the extension copy itself lives under ~/.omp (the misrouting trap #35 closes).
-		const ompOwn = path.join(HOME, ".omp", "agent", "extensions", "pi-verdict.ts");
+		const ompOwn = path.join(HOME, ".omp", "agent", "extensions", "omp-verdict.ts");
 		expect(resolveAgentDir(ompOwn, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
 	test("dev checkout (no agent anchor in the path) falls back to ~/.omp/agent", () => {
-		expect(resolveAgentDir("/repo/extensions/pi-verdict.ts", HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
+		expect(resolveAgentDir("/repo/extensions/omp-verdict.ts", HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 		expect(resolveAgentDir(null, HOME, undefined)).toBe(path.join(HOME, ".omp", "agent"));
 	});
 
@@ -2929,7 +2929,7 @@ describe("agentDir self-anchoring (#35)", () => {
 				const linked = path.join(base, "linked");
 				fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
 				fs.symlinkSync(agent, linked);
-				const own = path.join(linked, "extensions", "pi-verdict.ts");
+				const own = path.join(linked, "extensions", "omp-verdict.ts");
 				fs.writeFileSync(own, "// stub");
 				const resolved = resolveAgentDir(own, HOME, undefined);
 				expect(resolved === path.join(base, "agent") || resolved === path.join(HOME, ".omp", "agent")).toBe(true);
@@ -2967,16 +2967,16 @@ describe("omp host forms: S0 floor + self-protection (#35)", () => {
 
 	test("buildProtectedSet omp npm form: whole package dir as write-protected prefix + tamper watch", async () => {
 		await withTempDir("pv-omp-", async (agent) => {
-				const pkgDir = path.join(agent, "plugins", "node_modules", "pi-verdict");
+				const pkgDir = path.join(agent, "plugins", "node_modules", "omp-verdict");
 				fs.mkdirSync(path.join(pkgDir, "extensions"), { recursive: true });
 				fs.writeFileSync(path.join(pkgDir, "package.json"), "{}");
-				const own = path.join(pkgDir, "extensions", "pi-verdict.ts");
+				const own = path.join(pkgDir, "extensions", "omp-verdict.ts");
 				fs.writeFileSync(own, "// stub");
 				const s = buildProtectedSet(agent, own);
 				const pkgReal = fs.realpathSync(pkgDir);
 				expect(s.prefixes).toContain(pkgReal);
 				expect(isProtectedWritePath(path.join(pkgDir, "package.json"), "/proj", s)).toBe(true);
-				expect(isProtectedWritePath(path.join(pkgDir, "extensions", "pi-verdict.ts"), "/proj", s)).toBe(true);
+				expect(isProtectedWritePath(path.join(pkgDir, "extensions", "omp-verdict.ts"), "/proj", s)).toBe(true);
 				expect(isProtectedWritePath(path.join(agent, "plugins", "node_modules", "other-pkg", "x.ts"), "/proj", s)).toBe(false); // outside the package
 				const watched = s.watchBases.filter((w) => w.kind === "extension").map((w) => w.file);
 				expect(watched).toContain(path.join(pkgDir, "package.json"));
@@ -2988,9 +2988,9 @@ describe("omp host forms: S0 floor + self-protection (#35)", () => {
 		// ownFile deeper than <pkgRoot>/extensions must still protect the whole package dir,
 		// mirroring the pi npm-dir semantics (first segment under the install root)
 		await withTempDir("pv-omp2-", async (agent) => {
-				const pkgDir = path.join(agent, "plugins", "node_modules", "pi-verdict");
+				const pkgDir = path.join(agent, "plugins", "node_modules", "omp-verdict");
 				fs.mkdirSync(path.join(pkgDir, "extensions"), { recursive: true });
-				const own = path.join(pkgDir, "extensions", "pi-verdict.ts");
+				const own = path.join(pkgDir, "extensions", "omp-verdict.ts");
 				fs.writeFileSync(own, "// stub");
 				fs.writeFileSync(path.join(pkgDir, "package.json"), "{}");
 				const s = buildProtectedSet(agent, own);
@@ -3001,12 +3001,12 @@ describe("omp host forms: S0 floor + self-protection (#35)", () => {
 
 	test("bash variant: $PI_CODING_AGENT_DIR spelling covers the omp install copy", async () => {
 		await withTempDir("pv-omp3-", async (agent) => {
-				const pkgDir = path.join(agent, "plugins", "node_modules", "pi-verdict");
+				const pkgDir = path.join(agent, "plugins", "node_modules", "omp-verdict");
 				fs.mkdirSync(path.join(pkgDir, "extensions"), { recursive: true });
-				const own = path.join(pkgDir, "extensions", "pi-verdict.ts");
+				const own = path.join(pkgDir, "extensions", "omp-verdict.ts");
 				fs.writeFileSync(own, "// stub");
 				const s = buildProtectedSet(agent, own);
-				const rel = path.join("plugins", "node_modules", "pi-verdict", "extensions", "pi-verdict.ts");
+				const rel = path.join("plugins", "node_modules", "omp-verdict", "extensions", "omp-verdict.ts");
 				expect(s.bashPatterns.some((re) => re.test(`cat $PI_CODING_AGENT_DIR/${rel}`))).toBe(true);
 		});
 	});

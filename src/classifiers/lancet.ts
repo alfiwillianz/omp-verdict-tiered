@@ -52,9 +52,9 @@ export interface LancetMeta {
 /** Files the loader requires, with the hash list published in `export.json`. */
 export const LANCET_FILES = ["encoder-int8.onnx", "head.bin", "head.json", "model.json", "export.json", "vocab.json", "merges.txt"] as const;
 
-/** Default cache location: `~/.cache/pi/lancet-nano` (override via config modelPath). */
+/** Default cache location: `~/.cache/omp/lancet-nano` (override via config modelPath). */
 export function defaultLancetDir(): string {
-	return path.join(os.homedir(), ".cache", "pi", "lancet-nano");
+	return path.join(os.homedir(), ".cache", "omp", "lancet-nano");
 }
 
 export function expandHomePath(p: string): string {

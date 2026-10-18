@@ -2,7 +2,7 @@
   "schema_version": 2,
   "diagram_type": "workflow",
   "meta": {
-    "title": "pi-verdict Security Gate Pipeline",
+    "title": "omp-verdict Security Gate Pipeline",
     "locale": "en",
     "quality_profile": "showcase",
     "output": "security-pipeline.en.html",
@@ -200,7 +200,7 @@
       "type": "backend",
       "label": "User Rules",
       "sublabel": "deny → denyPaths·ask → allow",
-      "tag": "pi-verdict.json",
+      "tag": "omp-verdict.json",
       "width": 170
     },
     {

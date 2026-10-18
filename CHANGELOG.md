@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Renamed the product surface to `omp-verdict-tiered`**: package name, entry file (`extensions/omp-verdict.ts`), user config (`~/.omp/agent/config/omp-verdict.json`), the Tier 1 cache (`~/.cache/omp/lancet-nano`), env vars (`OMP_AUTO_MODE_MODEL`, `OMP_AUTO_MODE_DEBUG`, `OMP_VERDICT_LANCET_DIR`), and all user-facing messages. Upstream attribution (`jesset/pi-verdict`) and the historical CHANGELOG/research entries keep the original name.
 - **omp-only host port.** The extension now targets omp (oh-my-pi) ≥ 18.1 and drops the pi host entirely:
   - Host API: `@oh-my-pi/pi-coding-agent` types; model lookup through `ctx.models.resolve` (accepts `provider/id`, a bare id, or a role alias); completion through `completeSimple` with `ctx.modelRegistry.resolver(model, sessionId)` so omp's auth rotation and OAuth refresh apply; thinking control in omp's dialect (`disableReasoning` / `reasoning`).
   - Classifier backends: judgment-kind models (`typesafe`, `openrouter-decisions`, `openai-decisions`, `workers-ai-systemone`) answer through `createNativeJudge` from `@oh-my-pi/pi-ai`, keeping protocol-native confidence and the confidence floor; every other spec runs the chat prompt contract. pi's `classify()` / `findOfType` path is gone.

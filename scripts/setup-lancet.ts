@@ -1,7 +1,7 @@
 /**
  * Download and verify the LANCET Nano bundle used by Tier 1 (ADR-0009).
  *
- *   bun run setup:lancet            # download into ~/.cache/pi/lancet-nano
+ *   bun run setup:lancet            # download into ~/.cache/omp/lancet-nano
  *   bun run setup:lancet --check    # verify an existing bundle, no network
  *   bun run setup:lancet --dir DIR  # custom location (matches tier1Lancet.modelPath)
  *   bun run setup:lancet --force    # re-download even when the bundle verifies
@@ -31,14 +31,14 @@ const FILES = ["export.json", "model.json", "head.json", "head.bin", "vocab.json
 function usage(): never {
 	console.log(`Usage: bun run setup:lancet [--check] [--force] [--dir DIR]
 
-  --check   verify the bundle at DIR (default ~/.cache/pi/lancet-nano), no network
+  --check   verify the bundle at DIR (default ~/.cache/omp/lancet-nano), no network
   --force   re-download even if the existing bundle verifies
-  --dir     target directory (default: ~/.cache/pi/lancet-nano; ~ is expanded)`);
+  --dir     target directory (default: ~/.cache/omp/lancet-nano; ~ is expanded)`);
 	process.exit(0);
 }
 
 function parseArgs(argv: string[]): { dir: string; check: boolean; force: boolean } {
-	let dir = path.join(os.homedir(), ".cache", "pi", "lancet-nano");
+	let dir = path.join(os.homedir(), ".cache", "omp", "lancet-nano");
 	let check = false;
 	let force = false;
 	for (let i = 0; i < argv.length; i++) {
