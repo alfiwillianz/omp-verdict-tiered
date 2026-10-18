@@ -794,11 +794,11 @@ describe("classifier", () => {
 		expect(h.calls.length).toBe(1);
 		expect(h.calls[0]).toMatchObject({ model: "mock/glm", maxTokens: 512, disableReasoning: true });
 	});
-	test("empty output → retry at 1024, verdict honored", async () => {
+	test("empty output → retry at 4096, verdict honored", async () => {
 		const h = session({});
 		h.responses = [{ text: "", stopReason: "length" }, { text: "<verdict>deny</verdict> bad" }];
 		const r = await toolCall(h, "bash", { command: "cargo build" });
-		expect(h.calls.map((c: any) => c.maxTokens)).toEqual([512, 1024]);
+		expect(h.calls.map((c: any) => c.maxTokens)).toEqual([512, 4096]);
 		expect(r?.block).toBe(true);
 	});
 	test("both attempts fail → fail-closed deny with per-attempt diagnostics", async () => {
@@ -807,7 +807,7 @@ describe("classifier", () => {
 		const r = await toolCall(h, "bash", { command: "cargo build" });
 		expect(r?.block).toBe(true);
 		expect(r.reason).toContain("attempt 1 (512t)");
-		expect(r.reason).toContain("attempt 2 (1024t)");
+		expect(r.reason).toContain("attempt 2 (4096t)");
 	});
 	test("non-temperature provider error keeps temperature on both tiers (#47)", async () => {
 		const h = session({});
@@ -1822,7 +1822,7 @@ describe("agent-facing block reason form (#53)", () => {
 		expect(r.reason.startsWith(`[auto-mode classifier block] ${HEAD}`)).toBe(true);
 		expect(r.reason.endsWith(TAIL)).toBe(true);
 		expect(r.reason).toContain("attempt 1 (512t)");
-		expect(r.reason).toContain("attempt 2 (1024t)");
+		expect(r.reason).toContain("attempt 2 (4096t)");
 	});
 
 	test("no classifier model available → fail-closed tag", async () => {
@@ -2120,7 +2120,7 @@ describe("audit verdict records (#54)", () => {
 		const recs = readAudit();
 		expect(recs.length).toBe(2);
 		expect(recs[0].source).toBe("fail-closed");
-		expect(recs[0].reason).toContain("attempt 2 (1024t)");
+		expect(recs[0].reason).toContain("attempt 2 (4096t)");
 		expect(recs[0].transcript).toContain("cargo build");
 		expect(recs[1]).toMatchObject({ source: "fail-closed", model: null, transcript: null, rawResponse: null });
 	});

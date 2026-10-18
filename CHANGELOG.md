@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tier 2 returned an empty completion on reasoning models.** The adjudicator call capped `maxTokens` at 256, which backends that ignore `disableReasoning` (they still emit a thinking preamble) and Anthropic-dialect proxies (`max_tokens` must exceed the 1024-token thinking budget) answer with an empty string — surfaced as `invalid adjudicator JSON ... raw output=""`. The budget is now 4096, matching omp's own judgment backend (`JUDGMENT_CHAT_MAX_TOKENS`) and its documented rationale. The main classifier's retry tier moves from 1024 to 4096 for the same reason. An empty completion now reports its `stopReason` and `errorMessage` instead of claiming malformed JSON, and a regression test pins the budget above the 1024 floor.
+
 ### Changed
 
 - **Renamed the product surface to `omp-verdict-tiered`**: package name, entry file (`extensions/omp-verdict.ts`), user config (`~/.omp/agent/config/omp-verdict.json`), the Tier 1 cache (`~/.cache/omp/lancet-nano`), env vars (`OMP_AUTO_MODE_MODEL`, `OMP_AUTO_MODE_DEBUG`, `OMP_VERDICT_LANCET_DIR`), and all user-facing messages. Upstream attribution (`jesset/pi-verdict`) and the historical CHANGELOG/research entries keep the original name.

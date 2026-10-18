@@ -1555,8 +1555,14 @@ interface ClassifierOutcome {
 
 const CLASSIFIER_TIMEOUT_MS = 25_000; // 本网关 CC 分类器分布 p90=19.8s(15s 会误杀 ~15%),research/cache-sim 数据
 const FALLBACK_TIMEOUT_MS = 15_000; // #63: second-layer per-attempt budget — matches the first layer's per-attempt discipline (the two-tier retry can spend it twice)
+// A verdict is a handful of tokens, but the cap is not free to shrink: backends
+// that ignore `disableReasoning` still emit a thinking preamble, and Anthropic-
+// dialect proxies reject `max_tokens <= thinking.budget_tokens` (the lowest
+// effort pins 1024). omp's own judgment backend therefore uses 4096. The first
+// attempt stays lean; the retry tier must clear the budget floor, so 1024 alone
+// is too small.
 const CLASSIFIER_MAX_TOKENS = 512;
-const CLASSIFIER_RETRY_MAX_TOKENS = 1024; // 防御重试档:覆盖无视 reasoning:off 或轻思考仍超预算的模型
+const CLASSIFIER_RETRY_MAX_TOKENS = 4096; // retry tier: must exceed a 1024-token thinking budget
 const APIS_WITHOUT_TEMPERATURE = new Set<string>([
 	"openai-codex-responses",
 ]);

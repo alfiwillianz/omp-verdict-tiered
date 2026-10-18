@@ -29,6 +29,7 @@ import {
 } from "../src/classifiers/lancet.ts";
 import {
 	ADJUDICATOR_SYSTEM,
+	ADJUDICATOR_MAX_TOKENS,
 	adjudicateWithModel,
 	buildAdjudicatorPayload,
 	parseAdjudicatorResponse,
@@ -283,6 +284,29 @@ describe("Tier 2 call semantics", () => {
 		denyPathsActive: false,
 	};
 	const complete = (text: string, stopReason = "stop"): AdjudicatorComplete => async () => ({ content: [{ type: "text", text }], stopReason });
+
+	test("token budget clears a thinking-model preamble and the Anthropic budget floor", async () => {
+		// Regression: a 256-token cap produced empty completions on reasoning models
+		// and on Anthropic-dialect proxies (max_tokens must exceed the 1024-token
+		// thinking budget). omp's own judgment backend uses 4096 for the same reason.
+		let seen: Record<string, unknown> | undefined;
+		const capture: AdjudicatorComplete = async (_m, _c, options) => {
+			seen = options as Record<string, unknown>;
+			return { content: [{ type: "text", text: '{"verdict":"allow","reason":"ok"}' }], stopReason: "stop" };
+		};
+		await adjudicateWithModel({ model, complete: capture, host, request, timeoutMs: 1000 });
+		expect(seen?.maxTokens).toBe(ADJUDICATOR_MAX_TOKENS);
+		expect(ADJUDICATOR_MAX_TOKENS).toBeGreaterThan(1024);
+	});
+
+	test("empty completion names the stop reason instead of reporting invalid JSON", async () => {
+		const out = await adjudicateWithModel({ model, complete: complete("", "length"), host, request, timeoutMs: 1000 });
+		expect(out.ok).toBe(false);
+		if (!out.ok) {
+			expect(out.error).toContain("empty completion");
+			expect(out.error).toContain("stopReason=length");
+		}
+	});
 
 	test("successful JSON answer maps to a verdict", async () => {
 		const out = await adjudicateWithModel({ model, complete: complete('{"verdict":"allow","reason":"user asked for it"}'), host, request, timeoutMs: 1000 });
