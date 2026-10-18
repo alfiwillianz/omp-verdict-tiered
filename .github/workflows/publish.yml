@@ -1,0 +1,86 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build and verify the tarball without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      # A tag that disagrees with package.json ships the wrong version under the
+      # right name, and npm refuses to overwrite a published version - catch it
+      # here instead of after the tag exists.
+      - name: Tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(bun -e 'console.log(require("./package.json").version)')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - name: Pack
+        run: bun pm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: "*.tgz"
+          retention-days: 7
+
+  publish:
+    needs: verify
+    # Tag pushes always publish; a manual run publishes only when dry-run is off.
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.dry-run == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish
+        # The fork ships only `<upstream>-omp.<n>` prereleases, so `latest` is the
+        # right dist-tag: a bare `omp plugin install omp-verdict-tiered` must
+        # resolve. npm refuses a prerelease on the default tag without this flag.
+        run: npm publish --provenance --access public --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

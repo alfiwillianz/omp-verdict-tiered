@@ -1,33 +1,21 @@
 {
   "name": "omp-verdict-tiered",
-  "version": "0.15.0",
+  "version": "0.15.0-omp.1",
+  "description": "Tiered permission gate for omp (oh-my-pi): local LANCET-Nano triage plus a model adjudicator, inspired by Claude Code auto mode",
   "author": "Jesset (https://github.com/jesset)",
+  "contributors": [
+    {
+      "name": "alfiwillianz",
+      "url": "https://github.com/alfiwillianz"
+    }
+  ],
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/alfiwillianz/omp-verdict-tiered.git"
   },
-  "main": "extensions/omp-verdict.ts",
-  "dependencies": {
-    "@xenova/transformers": "^2.17.2",
-    "onnxruntime-node": "^1.30.0"
-  },
-  "devDependencies": {
-    "@oh-my-pi/pi-ai": "18.12.1",
-    "@oh-my-pi/pi-coding-agent": "18.12.1",
-    "@types/bun": "^1.4.3",
-    "@types/node": "^26.3.0",
-    "typescript": "^7.0.2"
-  },
-  "bugs": "https://github.com/alfiwillianz/omp-verdict-tiered/issues",
-  "description": "A minimal permission gate for omp (oh-my-pi), inspired by Claude Code's auto mode",
-  "files": [
-    "extensions/omp-verdict.ts",
-    "src/classifiers/*.ts",
-    "scripts/setup-lancet.ts",
-    "README.md",
-    "LICENSE"
-  ],
   "homepage": "https://github.com/alfiwillianz/omp-verdict-tiered#readme",
+  "bugs": "https://github.com/alfiwillianz/omp-verdict-tiered/issues",
   "keywords": [
     "omp",
     "oh-my-pi",
@@ -47,18 +35,44 @@
     "onnx",
     "lancet"
   ],
-  "license": "MIT",
+  "type": "module",
+  "main": "extensions/omp-verdict.ts",
+  "omp": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "engines": {
+    "bun": ">=1.1.0",
+    "omp": ">=18.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "extensions/omp-verdict.ts",
+    "src/classifiers/*.ts",
+    "scripts/setup-lancet.ts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "setup:lancet": "bun scripts/setup-lancet.ts",
     "build": "tsc --noEmit -p tsconfig.json"
   },
-  "type": "module",
-  "omp": {
-    "extensions": [
-      "./extensions"
-    ]
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "onnxruntime-node": "^1.30.0"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "18.12.1",
+    "@oh-my-pi/pi-coding-agent": "18.12.1",
+    "@types/bun": "^1.4.3",
+    "@types/node": "^26.3.0",
+    "typescript": "^7.0.2"
   },
   "trustedDependencies": [
     "onnxruntime-node",

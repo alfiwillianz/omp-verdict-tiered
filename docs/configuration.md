@@ -145,7 +145,7 @@ Writing any `semanticAdjudication` field opts into tiered adjudication — the b
 
 ## Host notes (omp)
 
-This repository is the **`omp-verdict-tiered` fork** and runs on **omp only**; it is not published to npm — install it from a clone per [installation.md](installation.md). It requires **omp ≥ 18.1**.
+This repository is the **`omp-verdict-tiered` fork** and runs on **omp only**. It is published to npm as [`omp-verdict-tiered`](https://www.npmjs.com/package/omp-verdict-tiered); see [installation.md](installation.md) for npm, git, and checkout installs. It requires **omp ≥ 18.1**.
 
 The extension self-anchors to the omp agent tree it is installed in: `PI_CODING_AGENT_DIR` wins, otherwise the install path (`<home>/.omp/agent/extensions/…` or either plugin layout) anchors to `<home>/.omp/agent`, and a dev checkout falls back to `~/.omp/agent`.
 

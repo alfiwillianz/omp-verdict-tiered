@@ -9,3 +9,6 @@ image-cards/
 
 # dependencies
 node_modules/
+
+# local release script (untracked by design)
+publish.sh

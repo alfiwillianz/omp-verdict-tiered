@@ -20,7 +20,7 @@ The extension's own security boundary is guarded by the extension itself, which 
 ### Release
 
 - Release sequence: a `chore(release): bump version` commit, an annotated tag, and a GitHub Release; `gh release` is terminally blocked by the built-in deny floor, so the user runs it in a terminal
-- This fork is not published to npm; the upstream publish workflow was removed. Distribution is source install per [docs/installation.md](docs/installation.md).
+- This fork is published to npm as `omp-verdict-tiered`, versioned `<upstream-version>-omp.<n>` (see [docs/installation.md](docs/installation.md#versioning)). Publishing runs from the tag-driven `Publish` workflow; a local `npm publish` is the fallback when Actions is unavailable.
 
 ## Agent skills
 

@@ -5,12 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-> **Fork.** This changelog starts from upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict) at 0.15.0 and records this fork's changes. Entries before `[0.16.0-omp.1]` describe upstream behavior and its original (pi) host.
+> **Fork.** This changelog starts from upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict) at 0.15.0 and records this fork's changes. Entries before `[0.15.0-omp.1]` describe upstream behavior and its original (pi) host.
 
 ## [Unreleased]
 
+## [0.15.0-omp.1] - 2026-10-18
+
+First published fork release. Versioning follows `<upstream-version>-omp.<n>`: the base tracks the upstream [pi-verdict](https://github.com/jesset/pi-verdict) release this fork is built on, and `n` increments per fork release on that base.
+
 ### Added
 
+- **npm distribution**: `omp plugin install omp-verdict-tiered` installs the plugin and its runtime dependencies without a clone. A tag-driven `Publish` workflow (`.github/workflows/publish.yml`) runs typecheck + tests, verifies the tag against `package.json`, and publishes with provenance.
 - **`/verdict-*` configuration commands**: `/verdict-status`, `/verdict-timeout`, `/verdict-role`, `/verdict-model`, `/verdict-floor`, and `/verdict-tier1` edit the global config in place (atomic write, unrelated keys preserved) and apply on the next session or `/reload`. `/verdict-role` autocompletes omp's built-in chat roles plus any custom `modelRoles` from `config.yml`; judge/image/web kind roles are excluded because Tier 2 needs a JSON-answering chat model.
 
 ### Documentation
@@ -30,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Credential floor targets omp's stores: `~/.omp/agent/agent.db` and `~/.omp/agent/secrets.yml`.
   - Agent-dir anchoring defaults to `~/.omp/agent`.
 - **Removed, with no omp equivalent**: the codemode nested-call policy (`codemodeNestedCalls`, [ADR-0006](docs/adr/0006-codemode-nested-calls-policy.md)) — omp's `tool_call` event carries no `parentToolCallId`; and the headless subagent-artifacts write exemption ([ADR-0008](docs/adr/0008-agentdir-sessions-write-exemption.md)) — the pi-specific path shape does not exist.
-- **Removed**: `README.zh-CN.md` (English-only docs), the npm publish workflow, and the pi peer dependency.
+- **Removed**: `README.zh-CN.md` (English-only docs) and the pi peer dependency. The upstream publish workflow was dropped during the port and is replaced in `0.15.0-omp.1` by the tag-driven `Publish` workflow.
 - **Docs rewritten for omp**: README, installation guide, configuration reference, security principles, CONTEXT glossary, and the pi-specific ADRs (0003 historical, 0005 rewritten, 0006/0008 withdrawn).
 
 ### Added
