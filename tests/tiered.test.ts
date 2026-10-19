@@ -62,7 +62,7 @@ function writeConfig(raw: unknown): void {
 
 const TIERED_CONFIG = {
 	semanticAdjudication: {
-		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85 },
+		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.9912 },
 		tier2Role: "adjudicator",
 		tier2TimeoutMs: 5000,
 	},
@@ -531,7 +531,7 @@ describe("semanticAdjudication config", () => {
 			skipped,
 		);
 		expect(parsed).toMatchObject({
-			tier1Lancet: { enabled: true, modelPath: DEFAULT_SEMANTIC_ADJUDICATION.tier1Lancet.modelPath, riskyThreshold: 0.85, riskyAction: "ask" },
+			tier1Lancet: { enabled: true, modelPath: DEFAULT_SEMANTIC_ADJUDICATION.tier1Lancet.modelPath, riskyThreshold: 0.9912, riskyAction: "ask" },
 			tier2Role: "adjudicator",
 			tier2TimeoutMs: DEFAULT_SEMANTIC_ADJUDICATION.tier2TimeoutMs,
 		});
@@ -778,7 +778,7 @@ describe("config template + handler fail-closed", () => {
 		} as never);
 		const raw = JSON.parse(fs.readFileSync(path.join(TMP_AGENT, "config", "omp-verdict.json"), "utf8"));
 		expect(raw.semanticAdjudication).toMatchObject({
-			tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+			tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.9912, riskyAction: "ask" },
 			tier2Role: "adjudicator",
 			tier2TimeoutMs: 20000,
 		});
@@ -787,7 +787,7 @@ describe("config template + handler fail-closed", () => {
 	test("handler-level: Tier 2 transport failure → one interactive ask; headless → block", async () => {
 		writeConfig({
 			// Point Tier 1 at a nonexistent bundle: load fails fast, call escalates.
-			semanticAdjudication: { tier1Lancet: { enabled: true, modelPath: "/nonexistent/lancet-bundle", riskyThreshold: 0.85 }, tier2Role: "adjudicator", tier2TimeoutMs: 2000 },
+			semanticAdjudication: { tier1Lancet: { enabled: true, modelPath: "/nonexistent/lancet-bundle", riskyThreshold: 0.9912 }, tier2Role: "adjudicator", tier2TimeoutMs: 2000 },
 		});
 		const { default: autoMode } = await import("../extensions/omp-verdict.ts");
 		const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<unknown>> = {};

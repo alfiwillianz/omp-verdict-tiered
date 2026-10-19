@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0-omp.1-hotfix] - 2026-10-20
+
+### Changed
+
+- **Tier 1 default `riskyThreshold` `0.85` → `0.9912`.** Aligns the default with LANCET-Nano's shipped logit calibration boundary (`riskyLogitThreshold: 7.7165`, ≤ 1% safe-command false-positive rate) so context-dependent gray-zone commands in `[29.6%, 99.12%)` escalate to Tier 2 instead of short-circuiting locally at Tier 1.
+
 ## [0.15.0-omp.1] - 2026-10-18
 
 First published fork release. Versioning follows `<upstream-version>-omp.<n>`: the base tracks the upstream [pi-verdict](https://github.com/jesset/pi-verdict) release this fork is built on, and `n` increments per fork release on that base.

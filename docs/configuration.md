@@ -29,7 +29,7 @@ Everything the gate reads from disk lives in `<agentDir>/config/omp-verdict.json
     "tier1Lancet": {
       "enabled": true,
       "modelPath": "~/.cache/omp/lancet-nano",
-      "riskyThreshold": 0.85,
+      "riskyThreshold": 0.9912,
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",
@@ -66,7 +66,7 @@ The optional `semanticAdjudication` block replaces the gray-zone classifier call
     "tier1Lancet": {
       "enabled": true,
       "modelPath": "~/.cache/omp/lancet-nano",
-      "riskyThreshold": 0.85,
+      "riskyThreshold": 0.9912,
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",
@@ -79,7 +79,7 @@ The optional `semanticAdjudication` block replaces the gray-zone classifier call
   - `not_flagged` → **allow immediately** (measured ~10 ms median warm on CPU).
   - `risky` → **ask** by default; `"riskyAction": "block"` makes it a deterministic **deny**.
   - `review`, or any abstention (more than 512 tokens, more than 8,192 bytes, unsupported shell, tokenizer/inference failure, missing bundle) → escalate to Tier 2. A long command is **never truncated** — the truncated tail could hide the risky part.
-  - `riskyThreshold` (0–1, default `0.85`) is a **calibrated probability**; it is mapped back onto the model's logit scale, so banding stays exact. The shipped model boundary is `0.9912`; lower values make Tier 1 escalate more often (fewer local allows), higher values make it decide more locally. `not_flagged` is not a safety guarantee — the deterministic floor still runs first, and Tier 2 only sees what Tier 1 escalates.
+  - `riskyThreshold` (0–1, default `0.9912`) is a **calibrated probability**; it is mapped back onto the model's logit scale, so banding stays exact. The default matches the shipped model boundary (`0.9912`); lower values make Tier 1 short-circuit to `risky` more often, higher values widen `review` so more flagged commands escalate to Tier 2. `not_flagged` is not a safety guarantee — the deterministic floor still runs first, and Tier 2 only sees what Tier 1 escalates.
   - `enabled: false` skips Tier 1 entirely: shell commands go straight to Tier 2 and its payload carries no triage block.
   - `modelPath` is the verified bundle directory (`~` expanded). Install it with `bun run setup:lancet` (see below).
 - **`tier2Role`** (default `"adjudicator"`) — resolved through omp's model facade: the configured role (as `@<role>`) → `"smol"` → the session model. Judge-kind entries are skipped (Tier 2 needs a generative JSON answer), as are entries without configured auth. Resolution is lazy — a Tier 1 `not_flagged` call never resolves a model or emits its warning.

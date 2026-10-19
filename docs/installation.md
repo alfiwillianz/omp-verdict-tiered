@@ -107,7 +107,7 @@ Then enable the block in `~/.omp/agent/config/omp-verdict.json` (edit outside om
     "tier1Lancet": {
       "enabled": true,
       "modelPath": "~/.cache/omp/lancet-nano",
-      "riskyThreshold": 0.85,
+      "riskyThreshold": 0.9912,
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",

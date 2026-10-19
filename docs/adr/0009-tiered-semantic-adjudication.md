@@ -20,7 +20,7 @@ Decision: a **two-tier semantic pipeline**, opt-in via a `semanticAdjudication` 
   - `not_flagged` → **allow** immediately, zero network activity.
   - `risky` → **ask** (default) or **deny** when `tier1Lancet.riskyAction: "block"`. The task's acceptance criterion allows either; ask is the default because a local model's confident band is still a judgment, and `ask` keeps a human in the loop for a destructive command the user may have explicitly requested. `block` exists for users who want deterministic denial at this tier.
   - `review`, or any abstention (oversized input, tokenizer failure, inference error, missing bundle) → escalate to Tier 2.
-- **Threshold**: `tier1Lancet.riskyThreshold` is a calibrated probability (default 0.85). It is mapped back onto the logit scale, so banding stays monotonic and exact; the shipped 0.9912 boundary remains available by setting it explicitly.
+- **Threshold**: `tier1Lancet.riskyThreshold` is a calibrated probability (default 0.9912, matching the shipped model boundary). It is mapped back onto the logit scale, so banding stays monotonic and exact.
 - **Integrity**: `scripts/setup-lancet.ts` downloads the pinned revision, verifies `export.json` against the release manifest digest, then every model file against `export.json`, then cross-checks the tokenizer against `@xenova/transformers`. The runtime repeats the per-file digest check on every load; a tampered bundle refuses to load and Tier 1 escalates.
 - **Failure direction**: every unexpected condition is `review`, never `not_flagged`. A missing or broken bundle degrades to Tier 2 with a one-shot warning; it never silently allows.
 
@@ -46,7 +46,7 @@ The tiered path replaces exactly the gray-zone classifier block: after self-prot
     "tier1Lancet": {
       "enabled": true,
       "modelPath": "~/.cache/omp/lancet-nano",
-      "riskyThreshold": 0.85,
+      "riskyThreshold": 0.9912,
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",

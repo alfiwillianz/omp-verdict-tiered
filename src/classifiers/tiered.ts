@@ -23,8 +23,8 @@ import type { AdjudicatorComplete, AdjudicatorModel, AdjudicatorOutcome, Adjudic
 export type ShellKind = "bash" | "powershell" | "cmd";
 
 /** ADR-0009 configuration block. Defaults: Tier 1 enabled (inert until a verified
- *  bundle loads), the task's stricter 0.85 risky boundary, risky → ask, the
- *  `adjudicator` role, 5s Tier 2 budget. */
+ *  bundle loads), the shipped 0.9912 risky boundary, risky → ask, the
+ *  `adjudicator` role, 20s Tier 2 budget. */
 export interface SemanticAdjudicationConfig {
 	tier1Lancet: {
 		enabled: boolean;

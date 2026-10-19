@@ -136,7 +136,7 @@ Each `/verdict-*` command edits the **global** config (`~/.omp/agent/config/omp-
     "tier1Lancet": {
       "enabled": true,
       "modelPath": "~/.cache/omp/lancet-nano",
-      "riskyThreshold": 0.85,
+      "riskyThreshold": 0.9912,
       "riskyAction": "ask"
     },
     "tier2Role": "adjudicator",

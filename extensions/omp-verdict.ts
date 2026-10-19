@@ -313,7 +313,7 @@ export type { SemanticAdjudicationConfig } from "../src/classifiers/tiered";
  *  single-file install keeps loading: the tiered runtime itself is loaded lazily
  *  and degrades to the legacy classifier path when the package tree is absent. */
 export const DEFAULT_SEMANTIC_ADJUDICATION: SemanticAdjudicationConfig = {
-	tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+	tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.9912, riskyAction: "ask" },
 	tier2Role: "adjudicator",
 	tier2TimeoutMs: 20000,
 };
@@ -464,7 +464,7 @@ const USER_CONFIG_TEMPLATE = `${JSON.stringify({
 	classifierFallbackModel: null,
 	classifierFallbackMode: "enforce",
 	semanticAdjudication: {
-		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.85, riskyAction: "ask" },
+		tier1Lancet: { enabled: true, modelPath: "~/.cache/omp/lancet-nano", riskyThreshold: 0.9912, riskyAction: "ask" },
 		tier2Role: "adjudicator",
 		tier2TimeoutMs: 20000,
 	},
