@@ -64,7 +64,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write # npm provenance
+      id-token: write
+
     steps:
       - uses: actions/checkout@v5
 
@@ -74,13 +75,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Ensure compatible npm
+        run: |
+          npm install --global npm@latest
+          npm --version
 
       - name: Publish
-        # The fork ships only `<upstream>-omp.<n>` prereleases, so `latest` is the
-        # right dist-tag: a bare `omp plugin install omp-verdict-tiered` must
-        # resolve. npm refuses a prerelease on the default tag without this flag.
+        # Trusted publishing uses GitHub OIDC; no NPM_TOKEN secret is needed.
+        # Keep the latest tag so bare package installs resolve to this release.
         run: npm publish --provenance --access public --tag latest
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
