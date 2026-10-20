@@ -1,6 +1,6 @@
 {
   "name": "omp-verdict-tiered",
-  "version": "0.15.0-omp.1-hotfix",
+  "version": "0.15.0-omp.0.1",
   "description": "Tiered permission gate for omp (oh-my-pi): local LANCET-Nano triage plus a model adjudicator, inspired by Claude Code auto mode",
   "author": "Jesset (https://github.com/jesset)",
   "contributors": [
