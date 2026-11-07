@@ -9,9 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0-omp.1] - 2026-11-07
+
 ### Changed
 
 - **Synced upstream v0.16.0.** The fork retains its own features on top of the ten security audit run-1 fixes listed under `[0.16.0]`: multi-path `pathTargets` for `ast_edit`/`ast_grep`, Tier 1 Lancet-Nano triage and Tier 2 semantic adjudication (`adjudicateTiered`, `resolveAdjudicatorModel`).
+- **`package.json` version realigned to `0.16.0-omp.1`.** The manifest still read `0.15.0-omp.0.1` after the `0.15.0-omp.1-hotfix` release; the tag-driven `Publish` workflow rejects a tag that disagrees with the manifest, so the version is corrected as part of this release.
 
 ## [0.16.0] - 2026-10-30
 

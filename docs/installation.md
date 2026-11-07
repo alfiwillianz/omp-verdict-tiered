@@ -6,7 +6,7 @@ It is published to npm as [`omp-verdict-tiered`](https://www.npmjs.com/package/o
 
 ## Versioning
 
-Releases follow `<upstream-version>-omp.<n>`: `0.15.0-omp.1` is the first fork release built on upstream 0.15.0, and `-omp.2`, `-omp.3`, … are subsequent fork releases that keep the same upstream base. When upstream cuts a new line (say 0.16.0), the fork moves to `0.16.0-omp.1`. Under semver's prerelease rules this sorts **below** the plain upstream version, which is what we want: `npm install omp-verdict-tiered` never resolves to an upstream `pi-verdict` build.
+Releases follow `<upstream-version>-omp.<n>`: `0.15.0-omp.1` is the first fork release built on upstream 0.15.0, and `-omp.2`, `-omp.3`, … are subsequent fork releases that keep the same upstream base. When upstream cuts a new line (say 0.16.0), the fork moves to `0.16.0-omp.1` — the current release, which syncs upstream 0.16.0's security audit run-1 fixes. Under semver's prerelease rules this sorts **below** the plain upstream version, which is what we want: `npm install omp-verdict-tiered` never resolves to an upstream `pi-verdict` build.
 
 ## Requirements
 
@@ -35,7 +35,7 @@ omp runs `bun install` in `~/.omp/plugins`, records the dependency in `~/.omp/pl
 omp plugin upgrade omp-verdict-tiered
 ```
 
-Pin a fork release explicitly with `omp plugin install omp-verdict-tiered@0.15.0-omp.1`; see [versioning](#versioning).
+Pin a fork release explicitly with `omp plugin install omp-verdict-tiered@0.16.0-omp.1`; see [versioning](#versioning).
 
 ### Option B — git install
 
