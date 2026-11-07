@@ -33,19 +33,28 @@ jobs:
       # whitelist) and are referenced by absolute URL (raw.githubusercontent
       # for bitmaps, jsDelivr /gh for SVGs). Rewrite @main to the SHA under
       # test so PRs validate their own state, then assert each URL resolves.
+      # The README currently carries no such assets; an empty match set is a
+      # pass, not a failure (grep exits 1 on no match under `set -e`).
       - name: README asset URLs resolve
         run: |
           set -euo pipefail
-          grep -hoE 'https://(raw\.githubusercontent\.com|cdn\.jsdelivr\.net/gh)/[^) ]+' README.md \
-          | sort -u \
-          | sed -E \
-              -e "s#(raw\.githubusercontent\.com/alfiwillianz/omp-verdict-tiered)/main#\1/${GITHUB_SHA}#" \
-              -e "s#(cdn\.jsdelivr\.net/gh/alfiwillianz/omp-verdict-tiered)@main#\1@${GITHUB_SHA}#" \
-          | while read -r url; do
-              if ! curl -fsSI --max-time 30 "$url" >/dev/null; then
-                echo "::error::broken README asset: $url"
-                exit 1
-              fi
-            done
+          urls="$(grep -hoE 'https://(raw\.githubusercontent\.com|cdn\.jsdelivr\.net/gh)/[^) ]+' README.md \
+            | sort -u \
+            | sed -E \
+                -e "s#(raw\.githubusercontent\.com/alfiwillianz/omp-verdict-tiered)/main#\1/${GITHUB_SHA}#" \
+                -e "s#(cdn\.jsdelivr\.net/gh/alfiwillianz/omp-verdict-tiered)@main#\1@${GITHUB_SHA}#" \
+            || true)"
+          if [ -z "$urls" ]; then
+            echo "No README asset URLs to check."
+            exit 0
+          fi
+          failed=0
+          while read -r url; do
+            if ! curl -fsSI --max-time 30 "$url" >/dev/null; then
+              echo "::error::broken README asset: $url"
+              failed=1
+            fi
+          done <<< "$urls"
+          exit "$failed"
 
 # trigger re-registration: touch v2
