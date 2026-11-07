@@ -36,3 +36,9 @@ omp-verdict 的安全边界(规则层 + 分类器)由运行在 agent 进程内�
 - 会话中手工修改 `omp-verdict.json` 会触发一次确认:保留即重建基线(会话照常),拒绝则还原;headless 下修改一律还原——请避免在有 headless 会话运行时编辑该文件;扩展副本的会话中变更(无论来源)一律还原 + fail-closed。
 - 扩展升级等合法变更依赖「新会话生效」流程;二期的跨会话基线将补上隔会话篡改盲区与升级确认 UX。
 - 检测非实时保证(复核窗口外的异步修改最迟在下一次复核或二期基线发现),文档须诚实标注。
+
+## Amendment (2026-10-30): the single-file form protects the whole extensions root
+
+Security-audit run-1 traced a gap in the pi single-file install form: only the gate's own file was exact-protected, so a planted sibling under `<agentDir>/extensions/` (e.g. `evil.ts`) passed on one classifier allow and would auto-load next session as unrestricted in-process code — rewriting the gate and its config, exactly this ADR's background threat ("提示注入只需说服分类器放行一次写入……下一会话门禁即空门或归攻击者所有"). The npm package form already closes the same planting class with a whole-package-dir prefix (#26); the single-file form now follows: the entire `<agentDir>/extensions` root joins the write prefixes (agent-side writes deny at layer 0; the user installs or upgrades by hand, as with every protected file), and existing sibling files join the IntegrityWatch baseline (a sibling modified mid-session is tamper; a newly planted file is prefix-denied on write — the baseline does not diff new files, unchanged).
+
+The omp `plugins/node_modules` roots are deliberately NOT widened: each installed package is already covered by its package-dir prefix, and `node_modules` as a whole is the package manager's surface — the 「全域保护」 veto above keeps applying outside `extensions/`. This amendment records the decision that `extensions/` is gate surface (auto-loaded in-process code), unlike `mcp.json`/`settings.json`/skills, which remain the host-and-user surface the veto protects.
