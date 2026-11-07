@@ -100,22 +100,41 @@ import type { SemanticAdjudicationConfig, ShellKind, Tier1Fn } from "../src/clas
 // 规则层:bash
 // ============================================================================
 
-/** 危险模式:对完整命令串匹配(覆盖管道/复合命令),命中即 deny(源自研究报告 §4.3) */
+/** git global-option sequence tolerated between `git` and its subcommand (audit
+ *  run-1): `-C <dir>`, `-c <k=v>`, `--git-dir=<p>` … defeated the historical
+ *  adjacency requirement (`git -C x push --force` floor-missed). Bounded to 8
+ *  repetitions (real global-option prefixes are 1–2) — the optional value makes
+ *  each repetition 2 backtracking splits, so the cap bounds the enumeration. */
+const GIT_GLOBAL_OPTS = String.raw`(?:-{1,2}[A-Za-z][\w-]*(?:[ =]\S+)?\s+){0,8}`;
+/** Block-device name family for the raw-device rule: sd/hd/vd/xvd letters with
+ *  optional numeric partition, nvme/mmcblk numbered forms. The `\b` boundary
+ *  keeps character devices (/dev/stdout, /dev/stderr) out. */
+const RAW_DEVICE = String.raw`sd[a-z](?:\d+)?|hd[a-z](?:\d+)?|nvme\d+n\d+(?:p\d+)?|mmcblk\d+(?:p\d+)?|vd[a-z](?:\d+)?|xvd[a-z](?:\d+)?`;
+
+/** 危险模式:对完整命令串匹配(覆盖管道/复合命令),命中即 deny(源自研究报告 §4.3)。
+ *  Canonical-spelling discipline (audit run-1): each enumerated danger covers the
+ *  standard spellings of the same act — git global options, multi-pipe download
+ *  chains, octal setuid modes, operand-form device writes, named fork bombs.
+ *  Backtracking discipline: separator-excluding single classes run UNBOUNDED
+ *  (greedy split is unique → linear); only bounded repetition counts (≤8 pipe
+ *  links) and bounded alternatives appear — a cap on a character class would
+ *  create split degrees of freedom and blow up exponentially (caught by the
+ *  ReDoS guard during the fix). */
 const BASH_DANGER_RULES: Array<{ id: string; pattern: RegExp; reason: string }> = [
 	{ id: "rm-recursive", pattern: /\brm\b[^;|&]*(\s-(?:[a-zA-Z]*r[a-zA-Z]*f?|[a-zA-Z]*f[a-zA-Z]*r)\b|--recursive)/i, reason: "recursive delete (rm -r)" },
 	{ id: "rm-root", pattern: /\brm\s+(-[a-zA-Z]*\s+)*(--recursive\s+)?(\/|\/etc|\/usr|\/var|~|\$HOME)(?:\s|$)/i, reason: "delete root/system/home directory" },
 	{ id: "sudo", pattern: /\bsudo\b/i, reason: "privilege escalation (sudo)" },
-	{ id: "chmod-777", pattern: /\bchmod\b[^;|&]*(777|a\+rwx|ugo\+rwx|ugo=rwx|[ug]\+s)\b/i, reason: "permission weakening (chmod 777/setuid)" },
-	{ id: "raw-device", pattern: /(>\s*\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|of=\/dev\/(sd|hd|nvme|mmcblk|vd|xvd)|\bmkfs\.)/i, reason: "raw device write/format" },
-	{ id: "git-push-force", pattern: /\bgit\s+push\b[^;|&]*(-f\b|--force\b)/i, reason: "git push --force" },
-	{ id: "git-reset-hard", pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
-	{ id: "git-clean-force", pattern: /\bgit\s+clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)/i, reason: "git clean -f" },
-	{ id: "git-checkout-dot", pattern: /\bgit\s+checkout\s+(--\s+)?\.(?:\s|$)/i, reason: "git checkout . (discard working tree)" },
-	{ id: "git-restore", pattern: /\bgit\s+restore\b/i, reason: "git restore (discard changes)" },
-	{ id: "remote-exec", pattern: /\b(curl|wget)\b[^;|&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b/i, reason: "remote code execution (curl|sh)" },
+	{ id: "chmod-777", pattern: /\bchmod\b[^;|&]*\b(0?777|[2467][0-7][0-7][1357]|a\+rwx|ugo\+rwx|ugo=rwx|[ug]\+s|[ug]o\+s)\b/i, reason: "permission weakening (chmod 777/setuid)" },
+	{ id: "raw-device", pattern: new RegExp(String.raw`(?:\b(?:cp|mv|tee|dd)\b[^;|&]{0,256}\s|>\s*|of=)\/dev\/(?:${RAW_DEVICE})\b|\bmkfs\.`, "i"), reason: "raw device write/format" },
+	{ id: "git-push-force", pattern: new RegExp(String.raw`\bgit\s+${GIT_GLOBAL_OPTS}push\b[^;|&]*(-f\b|--force\b)`, "i"), reason: "git push --force" },
+	{ id: "git-reset-hard", pattern: new RegExp(String.raw`\bgit\s+${GIT_GLOBAL_OPTS}reset\s+--hard\b`, "i"), reason: "git reset --hard" },
+	{ id: "git-clean-force", pattern: new RegExp(String.raw`\bgit\s+${GIT_GLOBAL_OPTS}clean\b[^;|&]*(\s-[a-zA-Z]*f|--force)`, "i"), reason: "git clean -f" },
+	{ id: "git-checkout-dot", pattern: new RegExp(String.raw`\bgit\s+${GIT_GLOBAL_OPTS}checkout\s+(--\s+)?\.(?:\s|$)`, "i"), reason: "git checkout . (discard working tree)" },
+	{ id: "git-restore", pattern: new RegExp(String.raw`\bgit\s+${GIT_GLOBAL_OPTS}restore\b`, "i"), reason: "git restore (discard changes)" },
+	{ id: "remote-exec", pattern: /\b(curl|wget)\b[^;|&|]*(?:\|[^;|&|]*){0,8}\|\s*(sudo\s+)?(ba|z|da)?sh\b/i, reason: "remote code execution (curl|sh)" },
 	{ id: "gh-repo", pattern: /\bgh\s+repo\s+(create|delete|rename|archive)\b/i, reason: "GitHub repository-level change" },
 	{ id: "gh-release", pattern: /\bgh\s+release\s+(create|delete|edit)\b/i, reason: "GitHub release change" },
-	{ id: "fork-bomb", pattern: /:\(\)\s*\{/, reason: "fork bomb" },
+	{ id: "fork-bomb", pattern: /:\(\)\s*\{|(\w{1,64})\s*\(\)\s*\{[^}|&]*\|[^}|&]*&\s*\}\s*;\s*\1\b/, reason: "fork bomb" },
 ];
 
 type RuleVerdict = "allow" | "deny" | "gray" | "ask";
@@ -140,17 +159,17 @@ interface RuleResult {
 	detail?: string;
 }
 
-/** Cap the danger-regex matching input (#25): the prefix-consuming character
- *  classes plus nested alternations can backtrack quadratically on very long
- *  separator-free strings. Beyond the cap, rule matching is lost and the call
- *  falls to the classifier (fail-closed direction). */
+/** Adversarial-length scale for the floor's ReDoS guard tests (#25, audit run-1):
+ *  matching itself is full-length — the historical hard cap truncated the floor
+ *  past 8192 chars while every other layer saw at most head600+tail400, leaving a
+ *  blind region where a payload executed under auto-allow. The guard test pins
+ *  that full-length matching stays fast on 200k-char adversarial shapes. */
 export const BASH_MAX_MATCH_LEN = 8192;
 
-function classifyBash(command: string, floorOn: boolean): RuleResult {
+export function classifyBash(command: string, floorOn: boolean): RuleResult {
 	if (floorOn) {
-		const capped = command.length > BASH_MAX_MATCH_LEN ? command.slice(0, BASH_MAX_MATCH_LEN) : command;
 		for (const rule of BASH_DANGER_RULES) {
-			if (rule.pattern.test(capped)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
+			if (rule.pattern.test(command)) return { verdict: "deny", reason: `rule ${rule.id}: ${rule.reason}` };
 		}
 	}
 	if (!command.trim()) return { verdict: "allow", reason: "empty command" };
@@ -193,11 +212,29 @@ function rebuiltForms(abs: string): string[] {
 			out.add(path.join(real, ...tail));
 			return [...out];
 		} catch {
-			const parent = path.dirname(dir);
-			if (parent === dir) return [...out];
-			tail.unshift(path.basename(dir));
-			dir = parent;
+			/* unresolved below */
 		}
+		// The deepest unresolved segment may itself be a — possibly dangling —
+		// symlink: realpath fails on its nonexistent target, so resolve the link by
+		// hand and let the target form join the set (audit run-1: a dangling
+		// k→target kept only the lexical form, and a write through it rule-allowed
+		// straight into the target tree). The out-set doubles as the cycle guard:
+		// a link already visited falls through to the ascent instead of looping.
+		let link: string | null = null;
+		try {
+			if (fs.lstatSync(dir).isSymbolicLink()) link = path.resolve(path.dirname(dir), fs.readlinkSync(dir));
+		} catch {
+			link = null;
+		}
+		if (link !== null && !out.has(link)) {
+			out.add(path.join(link, ...tail));
+			dir = link;
+			continue;
+		}
+		const parent = path.dirname(dir);
+		if (parent === dir) return [...out];
+		tail.unshift(path.basename(dir));
+		dir = parent;
 	}
 }
 
@@ -209,7 +246,14 @@ function rebuiltForms(abs: string): string[] {
 const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
 const fold = (s: string): string => (CASE_INSENSITIVE_FS ? s.toLowerCase() : s);
 const pathEquals = (a: string, b: string): boolean => fold(a) === fold(b);
-const pathStartsWith = (child: string, base: string): boolean => fold(child).startsWith(fold(base) + path.sep);
+const pathStartsWith = (child: string, base: string): boolean => {
+	const fb = fold(base);
+	// '/' is an ancestor of every absolute path — appending path.sep to it would
+	// build '//' and match nothing, voiding every containment compare against a
+	// root operand (audit run-1: filesystem-root search scope bypassed denyPaths)
+	if (fb === path.sep) return true;
+	return fold(child).startsWith(fb + path.sep);
+};
 
 // ============================================================================
 // 用户规则:白名单/黑名单(可配置;#12 审计响应)
@@ -743,10 +787,11 @@ function classifyPath(toolName: string, rawPath: string, cwd: string, isWrite: b
  *
  *  omp's built-in tool set: `bash` is the only command tool (omp has no separate
  *  PowerShell tool; on Windows bash runs through the configured shell), and the
- *  file tools are read/write/edit/grep/glob/find/ast_edit/ast_grep. */
+ *  file tools are read/write/edit/grep/glob/find/ls/ast_edit/ast_grep. */
 function toolKind(toolName: string): "command" | "file" | null {
 	switch (toolName) {
 		case "bash":
+		case "powershell":
 			return "command";
 		case "read":
 		case "write":
@@ -754,6 +799,7 @@ function toolKind(toolName: string): "command" | "file" | null {
 		case "grep":
 		case "glob":
 		case "find":
+		case "ls":
 		case "ast_edit":
 		case "ast_grep":
 			return "file";
@@ -767,7 +813,7 @@ function toolKind(toolName: string): "command" | "file" | null {
  *  cwd is the effective target (#48). `ast_grep` accepts a semicolon-delimited
  *  list, and `ast_edit` carries `paths[]`; both are handled by pathTargets(). */
 function isScopeTool(toolName: string): boolean {
-	return toolName === "grep" || toolName === "glob" || toolName === "find" || toolName === "ast_grep";
+	return toolName === "grep" || toolName === "glob" || toolName === "find" || toolName === "ls" || toolName === "ast_grep";
 }
 
 /** Every path argument a file tool exposes, in declaration order. Most tools carry
@@ -786,7 +832,48 @@ export function pathTargets(toolName: string, input: Record<string, unknown>): s
 	return [single];
 }
 
-/** 用户规则匹配目标:bash=完整命令串;路径类工具=解析后绝对路径;其余工具不参与。
+/** Scope-tool subtree S0 scan (audit run-1): grep/find/ls read every file under
+ *  their root, so the S0 read-deny binds the searched subtree, not the named
+ *  root alone. Bounded walk (listPackageFiles precedent): BFS — S0 material
+ *  (.env, credentials, .ssh) sits near the root in practice — with depth and
+ *  entry caps; node_modules and .git are skipped. Honest residual: a file buried
+ *  beyond the bounds escapes this scan. Symlinks are not followed (cycle and
+ *  escape safety); the target-side rebuiltForms still sees through them. */
+const SCOPE_S0_MAX_DEPTH = 8;
+const SCOPE_S0_MAX_ENTRIES = 500;
+function scopeContainsS0(root: string): boolean {
+	let level: string[] = [root];
+	let entries = 0;
+	for (let depth = 0; depth <= SCOPE_S0_MAX_DEPTH && level.length > 0; depth++) {
+		const next: string[] = [];
+		for (const dir of level) {
+			let names: string[];
+			try {
+				names = fs.readdirSync(dir);
+			} catch {
+				continue; // missing/unreadable/not-a-directory: nothing to scan
+			}
+			for (const name of names) {
+				if (name === "node_modules" || name === ".git") continue;
+				const full = path.join(dir, name);
+				if (S0_SECRET.some((r) => r.test(full))) return true;
+				if (++entries > SCOPE_S0_MAX_ENTRIES) return false;
+				let st: fs.Stats;
+				try {
+					st = fs.lstatSync(full);
+				} catch {
+					continue;
+				}
+				if (st.isDirectory()) next.push(full);
+			}
+		}
+		level = next;
+	}
+	return false;
+}
+
+/** User-rule match target: bash/powershell = the full command string; path tools =
+ *  the resolved absolute path; every other tool does not participate.
  *  Scope tools with an omitted path resolve to the cwd (#48) — user rules match
  *  the effective target, never a null that skips the whole rule block. */
 function userRuleTarget(toolName: string, input: Record<string, unknown>, cwd: string): string | null {
@@ -1087,6 +1174,11 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 		// → exact, a package dir (`@scope/pkg` or `pkg`) → prefix, so every
 		// npm form gets whole-package-dir protection (#26).
 		const extRoots = new Set<string>();
+		// audit run-1 (#6): the pi <agentDir>/extensions roots matched by the
+		// single-file install form — the root itself joins the write prefixes
+		// (a planted sibling must not pass on one classifier allow and own the
+		// next session's gate), and its existing files join the tamper baseline.
+		const piSingleRoots = new Set<string>();
 		const agentBases = new Set(baseForms(agentDir));
 		const configRootBases = new Set([...agentBases].map((b) => path.dirname(b)));
 		for (const seg of [["extensions"], ["plugins", "node_modules"]]) {
@@ -1108,6 +1200,13 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 					(singleFile ? exact : prefixes).add(f);
 					extTargets.add(f);
 				}
+				if (singleFile && !path.relative(agentDir, extRoot).startsWith("..")) {
+					// the pi extensions root only (not the omp node_modules roots):
+					// the npm form's #26 whole-package protection already covers it,
+					// and widening protection to all of node_modules is not ours to take
+					for (const f of baseForms(extRoot)) prefixes.add(f);
+					piSingleRoots.add(extRoot);
+				}
 				if (!singleFile && pkgRoot === null) pkgRoot = target;
 			}
 		}
@@ -1115,6 +1214,16 @@ export function buildProtectedSet(agentDir: string, ownFile: string | null): Pro
 		// expansion picks up real forms per file) — no duplicate entries
 		if (pkgRoot !== null) {
 			for (const f of listPackageFiles(pkgRoot)) {
+				if (seenWatch.has(f)) continue;
+				seenWatch.add(f);
+				watchBases.push({ file: f, kind: "extension" });
+			}
+		}
+		// audit run-1 (#6): existing siblings of the single-file install join the
+		// tamper baseline (same walk bounds); files planted later are caught by
+		// the root prefix on write, not by the baseline (new files are no diff)
+		for (const root of piSingleRoots) {
+			for (const f of listPackageFiles(root)) {
 				if (seenWatch.has(f)) continue;
 				seenWatch.add(f);
 				watchBases.push({ file: f, kind: "extension" });
@@ -1184,13 +1293,16 @@ export function isProtectedWritePath(rawPath: string, cwd: string, prot: Protect
 
 /** Read-deny for the verdicts dir (#54): audit records contain raw fail-closed
  *  model output — untrusted text that must not flow back into agent context.
- *  Unlike write protection (prefixes) this is read semantics, hence a separate set. */
-export function isProtectedReadPath(rawPath: string | undefined, cwd: string, prot: ProtectedSet): boolean {
+ *  Unlike write protection (prefixes) this is read semantics, hence a separate set.
+ *  Scope tools (subtree=true) compare bidirectionally (#48 discipline, audit
+ *  run-1): a search rooted ABOVE the verdicts dir reads its records too. */
+export function isProtectedReadPath(rawPath: string | undefined, cwd: string, prot: ProtectedSet, subtree = false): boolean {
 	if (prot.readPrefixes.length === 0) return false;
 	const target = rawPath ?? cwd; // #48: absent path → cwd is the effective target
 	for (const c of rebuiltForms(path.resolve(cwd, expandHome(target)))) {
 		for (const p of prot.readPrefixes) {
 			if (c === p || c.startsWith(p + path.sep)) return true;
+			if (subtree && pathStartsWith(p, c)) return true;
 		}
 	}
 	return false;
@@ -1212,8 +1324,9 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 		case "grep":
 		case "glob":
 		case "find":
+		case "ls":
 		case "ast_grep":
-			if (isProtectedReadPath(typeof input.path === "string" ? input.path : undefined, cwd, prot)) {
+			if (isProtectedReadPath(typeof input.path === "string" ? input.path : undefined, cwd, prot, isScopeTool(toolName))) {
 				return { verdict: "deny", reason: `self-protection layer (#54): ${typeof input.path === "string" ? input.path : cwd} holds the gate's verdict audit records — agent reads are denied (untrusted raw model output inside); view them outside omp` };
 			}
 			return null;
@@ -1224,8 +1337,20 @@ function selfProtectCheck(toolName: string, input: Record<string, unknown>, cwd:
 			}
 			return null;
 		}
-		default:
-			return null; // MCP/custom tools bypass the rule layer (ADR-0001: tamper detection backstops)
+		default: {
+			// MCP/custom tools skip the name-keyed dispatch, but their inputs still
+			// name paths: scan string values against the protected sets so the
+			// documented unconditional verdicts/config deny binds them too (audit
+			// run-1). Deny-direction over-approximation only — a protected-shaped
+			// string in any field blocks; there is no allow-grade counterpart.
+			for (const v of Object.values(input)) {
+				if (typeof v !== "string") continue;
+				if (isProtectedReadPath(v, cwd, prot) || isProtectedWritePath(v, cwd, prot)) {
+					return { verdict: "deny", reason: `self-protection layer (#54/ADR-0001): ${v} names a gate-protected path (verdict audit records / the gate's own files) — agent-side access is denied regardless of tool kind` };
+				}
+			}
+			return null; // 其余 MCP/自定义工具不经规则层(ADR-0001:由变更检测兜底)
+		}
 	}
 }
 
@@ -1346,12 +1471,28 @@ function classifyByRules(toolName: string, input: Record<string, unknown>, cwd: 
 		// read keeps classifyPath even with an empty path: resolved to cwd, it still
 		// carries the system-directory gray grading (bit-for-bit with the old switch)
 		base = classifyPath(toolName, String(input.path ?? ""), cwd, false, user.builtinDenyFloor);
-	} else if (kind === "file") { // grep/glob/find/ast_grep: optional path; absent → cwd is the
-		// effective target, so user rules and denyPaths compare against it (#48)
+	} else if (kind === "file") { // grep/glob/find/ls/ast_grep: optional path; absent/empty → cwd
+		// is the effective target, so every layer compares against it (#48)
 		const targets = pathTargets(toolName, input);
+		// The named root grades like a read (parity with read, #48 discipline) — and
+		// so does the SUBTREE it searches: a scope tool reads every file under the
+		// root, so S0 material inside the scope must not pass silently (audit run-1:
+		// an omitted path graded an unconditional allow and a cwd .env leaked with
+		// zero model calls). Floor-off degrades the hit to gray, same as every
+		// other built-in S0 deny.
 		base = targets.length === 0
-			? { verdict: "allow" }
+			? classifyPath(toolName, cwd, cwd, false, user.builtinDenyFloor)
 			: strictest(targets.map((p) => classifyPath(toolName, p, cwd, false, user.builtinDenyFloor)));
+		if (base.verdict !== "deny") {
+			// Every searched root is scanned, not just the first: a semicolon list
+			// (ast_grep) or an omitted path (cwd) must not hide S0 material.
+			const roots = targets.length === 0 ? [cwd] : targets;
+			if (roots.some((p) => scopeContainsS0(path.resolve(cwd, expandHome(p))))) {
+				base = user.builtinDenyFloor
+					? { verdict: "deny", reason: "S0 secrets/credential file inside the search scope (scope tool)" }
+					: { verdict: "gray", reason: "S0 secrets/credential file inside the search scope (scope tool)" };
+			}
+		}
 	} else {
 		// ignoreTools passthrough: user-declared exempt tools skip adjudication;
 		// reached only after self-protection and the deny floor, so neither can be
@@ -1544,14 +1685,19 @@ export function composeVerdictLine(answer: ClassifierAnswerShape, api: string): 
 const MAX_USER_MESSAGES = 5;
 const MAX_TOOL_CALLS = 10;
 const MAX_ENTRY_CHARS = 1000;
+/** Action-under-review window (audit run-1, actionline): the LAST transcript line
+ *  is what the classifier prompt and the confirm dialog actually adjudicate — it
+ *  gets a much larger cap than history entries so command content beyond the
+ *  historical floor cap stays visible to the layers that must judge it. */
+const MAX_ACTION_CHARS = 16384;
 
 /** 去零宽字符 + 限长(头 60% + 尾 40%),防注入基础清洗(借鉴 ai-guard) */
-function sanitize(text: string): string {
+function sanitize(text: string, maxChars: number = MAX_ENTRY_CHARS): string {
 	// eslint-disable-next-line no-control-regex
 	const cleaned = text.replace(/[​-‍⁠﻿]/g, "");
-	if (cleaned.length <= MAX_ENTRY_CHARS) return cleaned;
-	const head = Math.floor(MAX_ENTRY_CHARS * 0.6);
-	const tail = MAX_ENTRY_CHARS - head;
+	if (cleaned.length <= maxChars) return cleaned;
+	const head = Math.floor(maxChars * 0.6);
+	const tail = maxChars - head;
 	return `${cleaned.slice(0, head)}…[truncated]…${cleaned.slice(-tail)}`;
 }
 
@@ -1561,14 +1707,17 @@ function sanitize(text: string): string {
  *  otherwise forge a structural line (#22). Covers \n, \r\n, lone \r and the
  *  Unicode separators U+2028/U+2029/U+0085, which models may render as breaks.
  *  Content is preserved, only the line structure is defended. */
-function transcriptSafe(text: string): string {
-	return sanitize(text).replace(/[\r\n\u2028\u2029\u0085]/g, "\\n");
+function transcriptSafe(text: string, maxChars: number = MAX_ENTRY_CHARS): string {
+	return sanitize(text, maxChars).replace(/[\r\n\f\v\u2028\u2029\u0085]/g, "\\n");
 }
 
-function toolCallLine(name: string, args: Record<string, unknown>): string {
-	if (typeof args.command === "string") return `${name}: ${transcriptSafe(args.command)}`;
-	if (typeof args.path === "string") return `${name}: ${transcriptSafe(args.path)}`;
-	return `${name}: ${transcriptSafe(JSON.stringify(args))}`;
+function toolCallLine(name: string, args: Record<string, unknown>, maxChars: number = MAX_ENTRY_CHARS): string {
+	// The name is model-chosen too (audit run-1): unescaped, a newline-bearing
+	// name forged a structural User: line in the live prompt and the history.
+	const safeName = transcriptSafe(name);
+	if (typeof args.command === "string") return `${safeName}: ${transcriptSafe(args.command, maxChars)}`;
+	if (typeof args.path === "string") return `${safeName}: ${transcriptSafe(args.path, maxChars)}`;
+	return `${safeName}: ${transcriptSafe(JSON.stringify(args), maxChars)}`;
 }
 
 /** 判定管线对宿主会话的最小结构需求(转录源 + 会话 id)——adjudicate 不接完整
@@ -2109,7 +2258,19 @@ export class AuditLog {
 			if (this.redact) {
 				try {
 					persisted = redactSecrets(record);
-				} catch { /* fail-open */ }
+				} catch {
+					// Recursion depth exceeded (audit run-1): failing open here
+					// persisted the raw record — the exact secret the redaction
+					// exists to scrub. Fall back to serialize-then-redact: a flat
+					// string has no structure to recurse into (the JSON scalars
+					// survive the round-trip untouched; serializer stack depth
+					// exceeds the recursive redactor's by ~2x on every supported
+					// runtime). Only if serialization too fails does the
+					// record-integrity-over-hygiene stance apply.
+					try {
+						persisted = JSON.parse(redactString(JSON.stringify(record))) as AuditRecord;
+					} catch { /* fail-open: record integrity over hygiene */ }
+				}
 			}
 			fs.appendFileSync(file, JSON.stringify(persisted) + "\n");
 		} catch (err) {
@@ -2502,6 +2663,7 @@ async function adjudicateTiered(
 }
 
 
+
 /**
  * The pre-ADR-0009 gray-zone path: one classifier layer (a
  * chat completion) plus the #63/#67 confidence cascade. Kept intact for two
@@ -2606,7 +2768,7 @@ export async function adjudicate(
 	// handler appends after the confirm resolves (with the ground truth); everything else
 	// appends immediately. Recording stays observe-only — it never changes a verdict; write
 	// failures stay fail-soft in the sink and surface once via drainWarning.
-	const actionLine = toolCallLine(call.toolName, call.input);
+	const actionLine = toolCallLine(call.toolName, call.input, MAX_ACTION_CHARS);
 	const buildRecord = (v: Pick<AuditRecord, "verdict" | "reason" | "source" | "degraded">, raw: ClassifierOutcome["auditRaw"] | null): AuditRecord => ({
 		ts: new Date().toISOString(),
 		sessionId: env.host.getSessionId(),
@@ -3208,7 +3370,7 @@ export default function autoMode(pi: ExtensionAPI, deps: AutoModeDeps = {}) {
 	}
 
 	function describeAction(toolName: string, input: Record<string, unknown>): string {
-		return toolCallLine(toolName, input);
+		return toolCallLine(toolName, input, MAX_ACTION_CHARS);
 	}
 
 	pi.on("tool_call", async (event, ctx) => {
