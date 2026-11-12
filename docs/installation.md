@@ -1,5 +1,7 @@
 # Installing omp-verdict-tiered
 
+> **Archived — this project is no longer maintained.** Development moved from omp to **DeepSeek Harness (dsh)**; this fork gets no further releases or security fixes, and the npm package is deprecated. On **pi or omp**, install the upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict) — omp loads pi plugins, so upstream runs there too. On **dsh**, use [dsh-verdict-tiered](https://github.com/alfiwillianz/dsh-verdict-tiered). The instructions below are kept for existing omp users only.
+
 This repository is the **`omp-verdict-tiered` fork** of [pi-verdict](https://github.com/jesset/pi-verdict), ported to run on **omp (oh-my-pi) only**. It carries the tiered semantic adjudication work ([ADR-0009](adr/0009-tiered-semantic-adjudication.md)) on top of the 0.15.0 line.
 
 It is published to npm as [`omp-verdict-tiered`](https://www.npmjs.com/package/omp-verdict-tiered). A clone is only needed to develop, pin a commit, or read the source.

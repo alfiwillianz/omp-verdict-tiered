@@ -1,5 +1,14 @@
 # omp-verdict-tiered
 
+> **Archived — this project is no longer maintained.**
+>
+> Development moved from **omp** to **DeepSeek Harness (dsh)**, so this fork will receive no further releases and no further security fixes to its rule floor. The npm package is deprecated.
+>
+> - **On pi or omp?** Use the upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict). omp loads pi plugins, so upstream runs on omp too — this fork is not needed.
+> - **On dsh?** Development continues in [dsh-verdict-tiered](https://github.com/alfiwillianz/dsh-verdict-tiered).
+>
+> The code here stays available under the MIT license for reference, and anyone who still runs omp is welcome to keep a private fork alive.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![omp extension](https://img.shields.io/badge/omp-extension-blueviolet)](https://omp.sh)
 [![npm](https://img.shields.io/npm/v/omp-verdict-tiered)](https://www.npmjs.com/package/omp-verdict-tiered)
@@ -36,6 +45,8 @@ omp ships with no per-call permission prompt — every tool call executes with t
 Full statement in [docs/security-principles.md](https://github.com/alfiwillianz/omp-verdict-tiered/blob/main/docs/security-principles.md).
 
 ## Quick start
+
+> **Archived — do not start a new install.** This project is no longer maintained. On **pi or omp**, install the upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict); on **dsh**, use [dsh-verdict-tiered](https://github.com/alfiwillianz/dsh-verdict-tiered). The steps below are kept for existing omp users.
 
 ```bash
 # 1. install the plugin (pulls the ONNX runtime it needs)

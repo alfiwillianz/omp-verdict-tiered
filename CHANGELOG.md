@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Project archived.** Development moved from omp to DeepSeek Harness (dsh), so this fork receives no further releases and no further security fixes to its rule floor. The npm package is deprecated with the same message. The README, installation guide, and `package.json` now route users by host: pi and omp install the upstream [jesset/pi-verdict](https://github.com/jesset/pi-verdict) (omp loads pi plugins), and dsh uses the successor [dsh-verdict-tiered](https://github.com/alfiwillianz/dsh-verdict-tiered). Existing installs keep working; the code stays available under the MIT license.
+
 ## [0.16.0-omp.1] - 2026-11-07
 
 ### Changed
